@@ -42,7 +42,7 @@ jobs:
         run: bun test
 
   build:
-    name: Build and package ${{ matrix.target }}
+    name: Build ${{ matrix.target }}
     needs: verify
     runs-on: ubuntu-latest
     strategy:
@@ -88,31 +88,24 @@ jobs:
         run: |
           executable="$GITHUB_WORKSPACE/dist/${{ matrix.target }}/lore-auth"
           test -x "$executable"
-          version="$(docker run --rm \
-            --volume "$GITHUB_WORKSPACE/dist/${{ matrix.target }}:/app:ro" \
-            --workdir /app \
-            alpine:3.22 \
-            ./lore-auth --version)"
           expected_version="$(bun -p "require('./package.json').version")"
-          test "$version" = "$expected_version"
           docker run --rm \
+            --env EXPECTED_VERSION="$expected_version" \
             --volume "$GITHUB_WORKSPACE/dist/${{ matrix.target }}:/app:ro" \
             --workdir /app \
             alpine:3.22 \
-            ./lore-auth --check-embedded-protos
+            sh -euc '
+              apk add --no-cache libstdc++ libgcc
+              version="$(./lore-auth --version)"
+              test "$version" = "$EXPECTED_VERSION"
+              ./lore-auth --check-embedded-protos
+            '
 
-      - name: Package executable
-        shell: bash
-        run: |
-          archive="$GITHUB_WORKSPACE/dist/lore-auth-${{ matrix.target }}.zip"
-          cd "$GITHUB_WORKSPACE/dist/${{ matrix.target }}"
-          zip -9 "$archive" "${{ matrix.executable }}"
-
-      - name: Upload packaged executable
+      - name: Upload compiled executable
         uses: actions/upload-artifact@v4
         with:
           name: lore-auth-${{ matrix.target }}
-          path: dist/lore-auth-${{ matrix.target }}.zip
+          path: dist/${{ matrix.target }}/${{ matrix.executable }}
           if-no-files-found: error
           retention-days: 14
 
@@ -123,12 +116,47 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download packaged executables
+      - name: Download compiled executables
         uses: actions/download-artifact@v4
         with:
           pattern: lore-auth-*
-          path: release-assets
-          merge-multiple: true
+          path: release-staging
+
+      - name: Package release executables
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          targets=(
+            linux-x64
+            linux-arm64
+            linux-x64-musl
+            linux-arm64-musl
+            windows-x64
+            macos-x64
+            macos-arm64
+          )
+
+          for target in "${targets[@]}"; do
+            executable="lore-auth"
+            if [[ "$target" == "windows-x64" ]]; then
+              executable="lore-auth.exe"
+            fi
+
+            source_dir="$GITHUB_WORKSPACE/release-staging/lore-auth-$target"
+            archive="$GITHUB_WORKSPACE/release-assets/lore-auth-$target.zip"
+            test -f "$source_dir/$executable"
+            if [[ "$target" != "windows-x64" ]]; then
+              chmod +x "$source_dir/$executable"
+            fi
+
+            (
+              cd "$source_dir"
+              zip -9 "$archive" "$executable"
+            )
+
+            # Every release archive must contain exactly one executable at its root.
+            test "$(zipinfo -1 "$archive")" = "$executable"
+          done
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
