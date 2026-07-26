@@ -6,8 +6,8 @@
  * or `--target=<name>` for one explicit target.
  */
 
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 interface CompileTarget {
   /** Stable target name used by developers and CI. */
@@ -21,11 +21,21 @@ interface CompileTarget {
 const targets = {
   "linux-x64": {
     name: "linux-x64",
-    bunTarget: "bun-linux-x64-musl",
+    bunTarget: "bun-linux-x64",
     executable: "lore-auth",
   },
   "linux-arm64": {
     name: "linux-arm64",
+    bunTarget: "bun-linux-arm64",
+    executable: "lore-auth",
+  },
+  "linux-x64-musl": {
+    name: "linux-x64-musl",
+    bunTarget: "bun-linux-x64-musl",
+    executable: "lore-auth",
+  },
+  "linux-arm64-musl": {
+    name: "linux-arm64-musl",
     bunTarget: "bun-linux-arm64-musl",
     executable: "lore-auth",
   },
@@ -108,6 +118,7 @@ async function compile(target: CompileTarget, native: boolean): Promise<void> {
   // Separate directories preserve every target during `--all` while keeping the
   // executable name identical inside each release archive.
   const outputPath = join("dist", target.name, target.executable);
+  await mkdir(dirname(outputPath), { recursive: true });
   console.log(`[compile] ${target.name} -> ${outputPath}`);
 
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -142,7 +153,20 @@ async function compile(target: CompileTarget, native: boolean): Promise<void> {
       throw: false,
     });
 
-    if (result.success) return;
+    if (result.success) {
+      try {
+        const artifact = await stat(outputPath);
+        if (artifact.isFile() && artifact.size > 0) return;
+      } catch {
+        // The diagnostic below reports Bun's actual output paths.
+      }
+
+      const actualOutputs = result.outputs.map((output) => output.path).join(", ");
+      console.error(
+        `[compile] Bun reported success but ${outputPath} is missing or empty. ` +
+          `Reported outputs: ${actualOutputs || "(none)"}`,
+      );
+    }
     for (const log of result.logs) console.error(log);
     if (attempt < 2) {
       // Cross-compilation downloads a target runtime, so retry one transient failure.
@@ -154,7 +178,6 @@ async function compile(target: CompileTarget, native: boolean): Promise<void> {
   throw new Error(`Failed to compile ${target.name}`);
 }
 
-await mkdir("dist", { recursive: true });
 for (const selection of selectedTargets()) {
   await compile(selection.target, selection.native);
 }

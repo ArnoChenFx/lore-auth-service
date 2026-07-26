@@ -93,9 +93,11 @@ Compile one explicit target:
 bun run build:compile --target=linux-x64
 ```
 
-Supported targets are `linux-x64`, `linux-arm64`, `windows-x64`, `macos-x64`, and
-`macos-arm64`. Outputs are written to `dist/<target>/`. The Windows executable is named
-`lore-auth.exe`; every other platform uses `lore-auth`. Linux executables use musl.
+Supported targets are `linux-x64`, `linux-arm64`, `linux-x64-musl`,
+`linux-arm64-musl`, `windows-x64`, `macos-x64`, and `macos-arm64`. Linux targets
+without a suffix use glibc; Alpine and other musl systems should use the `-musl`
+targets. Outputs are written to `dist/<target>/`. The Windows executable is named
+`lore-auth.exe`; every other platform uses `lore-auth`.
 
 ## Production setup
 

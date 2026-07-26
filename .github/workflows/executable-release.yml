@@ -53,6 +53,10 @@ jobs:
             executable: lore-auth
           - target: linux-arm64
             executable: lore-auth
+          - target: linux-x64-musl
+            executable: lore-auth
+          - target: linux-arm64-musl
+            executable: lore-auth
           - target: windows-x64
             executable: lore-auth.exe
           - target: macos-x64
@@ -74,9 +78,28 @@ jobs:
       - name: Compile target
         run: bun run build:compile --target=${{ matrix.target }}
 
-      - name: Verify embedded Proto files
+      - name: Verify Linux glibc executable
         if: matrix.target == 'linux-x64'
         run: bun run test:compiled dist/${{ matrix.target }}/lore-auth
+
+      - name: Verify Linux musl executable
+        if: matrix.target == 'linux-x64-musl'
+        shell: bash
+        run: |
+          executable="$GITHUB_WORKSPACE/dist/${{ matrix.target }}/lore-auth"
+          test -x "$executable"
+          version="$(docker run --rm \
+            --volume "$GITHUB_WORKSPACE/dist/${{ matrix.target }}:/app:ro" \
+            --workdir /app \
+            alpine:3.22 \
+            ./lore-auth --version)"
+          expected_version="$(bun -p "require('./package.json').version")"
+          test "$version" = "$expected_version"
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/dist/${{ matrix.target }}:/app:ro" \
+            --workdir /app \
+            alpine:3.22 \
+            ./lore-auth --check-embedded-protos
 
       - name: Package executable
         shell: bash

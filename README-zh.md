@@ -91,9 +91,11 @@ bun run build:compile:all
 bun run build:compile --target=linux-x64
 ```
 
-支持 `linux-x64`、`linux-arm64`、`windows-x64`、`macos-x64` 和
-`macos-arm64`。产物位于 `dist/<目标>/`，其中 Windows 程序名为
-`lore-auth.exe`，其他平台统一为 `lore-auth`。Linux 产物使用 musl。
+支持 `linux-x64`、`linux-arm64`、`linux-x64-musl`、
+`linux-arm64-musl`、`windows-x64`、`macos-x64` 和 `macos-arm64`。
+不带后缀的 Linux 目标使用 glibc；Alpine 等 musl 系统应选择带 `-musl`
+后缀的目标。产物位于 `dist/<目标>/`，其中 Windows 程序名为
+`lore-auth.exe`，其他平台统一为 `lore-auth`。
 
 ## 生产环境配置
 
