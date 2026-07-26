@@ -7,7 +7,7 @@
 
 import { Database } from "bun:sqlite";
 import { scryptSync, randomBytes, timingSafeEqual, createHash } from "crypto";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 
 export interface User {
   id: number;
@@ -35,7 +35,7 @@ function getDb(dbPath: string): Database {
     ? dbPath.replace(/[/\\][^/\\]*$/, "")
     : ".";
   if (dir && !existsSync(dir)) {
-    import("fs").then(({ mkdirSync }) => mkdirSync(dir, { recursive: true }));
+    mkdirSync(dir, { recursive: true });
   }
 
   db = new Database(dbPath);
