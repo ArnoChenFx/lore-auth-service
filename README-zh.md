@@ -91,11 +91,24 @@ bun run build:compile:all
 bun run build:compile --target=linux-x64
 ```
 
-支持 `linux-x64`、`linux-arm64`、`linux-x64-musl`、
-`linux-arm64-musl`、`windows-x64`、`macos-x64` 和 `macos-arm64`。
-不带后缀的 Linux 目标使用 glibc；Alpine 等 musl 系统应选择带 `-musl`
-后缀的目标。产物位于 `dist/<目标>/`，其中 Windows 程序名为
-`lore-auth.exe`，其他平台统一为 `lore-auth`。
+## 仓库 ID 命令行工具
+
+仓库根目录中的 `.lore/id` 或 `.urc/id` 是 16 字节二进制 ID。以下命令会自动
+识别仓库格式，并输出认证服务使用的 `urc-<32位十六进制>` 资源 ID：
+
+```bash
+bun run repository:id /path/to/repository
+```
+
+未传入仓库目录时默认检查当前目录。也可以直接指定 ID 文件：
+
+```bash
+bun run repository:id --id-file /path/to/repository/.lore/id
+bun run repository:id --help
+```
+
+如果两种 ID 文件同时存在，工具会要求使用 `--id-file` 明确选择。命令行输出与
+错误信息统一使用英文，出错时退出码为 `1`。
 
 ## 生产环境配置
 
@@ -171,20 +184,16 @@ endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
 
 Repository ID 是 16 字节标识符的 32 位小写十六进制表示。管理后台使用的资源 ID 需要额外添加 `urc-` 前缀。
 
-如果存在任意本地工作副本，可以读取新格式 `.lore/id` 或旧格式 `.urc/id`。该文件是二进制内容，不能直接当文本读取，也不需要再计算哈希：
+如果存在任意本地工作副本，请使用前述[仓库 ID 命令行工具](#仓库-id-命令行工具)。
+工具会自动识别新格式 `.lore/id` 或旧格式 `.urc/id`，校验二进制 ID 是否正好为
+16 字节，并输出带有 `urc-` 前缀的资源 ID：
 
 ```bash
-# 根据仓库格式选择其中一个文件。
-id_file=/path/to/repository/.lore/id
-# id_file=/path/to/repository/.urc/id
-
-repository_id="$(od -An -v -tx1 "$id_file" | tr -d ' \n')"
-test "${#repository_id}" -eq 32 || {
-  echo "Invalid Lore Repository ID: expected 16 bytes" >&2
-  exit 1
-}
-printf 'urc-%s\n' "$repository_id"
+bun run repository:id /path/to/repository
 ```
+
+不需要手动选择 ID 文件、将其当作文本读取或再次计算哈希。非标准目录结构可使用
+`bun run repository:id --id-file <path>` 显式指定 ID 文件。
 
 如果以 Lore Server 的存储清单为准，并且认证还没有启用，可以直接在服务器或具有网络访问权限的同版本 CLI 上执行：
 

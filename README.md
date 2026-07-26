@@ -93,11 +93,27 @@ Compile one explicit target:
 bun run build:compile --target=linux-x64
 ```
 
-Supported targets are `linux-x64`, `linux-arm64`, `linux-x64-musl`,
-`linux-arm64-musl`, `windows-x64`, `macos-x64`, and `macos-arm64`. Linux targets
-without a suffix use glibc; Alpine and other musl systems should use the `-musl`
-targets. Outputs are written to `dist/<target>/`. The Windows executable is named
-`lore-auth.exe`; every other platform uses `lore-auth`.
+## Repository ID command-line tool
+
+The `.lore/id` or `.urc/id` file under a repository root contains a 16-byte
+binary ID. The following command detects the repository format automatically
+and prints the `urc-<32-lowercase-hex>` resource ID used by the auth service:
+
+```bash
+bun run repository:id /path/to/repository
+```
+
+When no repository directory is provided, the tool checks the current working
+directory. You can also specify the ID file explicitly:
+
+```bash
+bun run repository:id --id-file /path/to/repository/.lore/id
+bun run repository:id --help
+```
+
+If both ID files exist, the tool requires `--id-file` to select one explicitly.
+All command output and error messages are in English. Errors return exit code
+`1`.
 
 ## Production setup
 
@@ -173,20 +189,19 @@ Existing repository data does not need to be rebuilt or uploaded again. Before J
 
 A Repository ID is the 32-lowercase-hex representation of a 16-byte identifier. The administration panel uses the same value with an additional `urc-` prefix.
 
-If any local working copy exists, read `.lore/id` for the current format or `.urc/id` for the legacy format. The file is binary; do not read it as text or hash it again:
+If any local working copy exists, use the
+[Repository ID command-line tool](#repository-id-command-line-tool). It detects
+the current `.lore/id` or legacy `.urc/id` format automatically, verifies that
+the binary ID is exactly 16 bytes, and prints the resource ID with its `urc-`
+prefix:
 
 ```bash
-# Select the file that matches the repository format.
-id_file=/path/to/repository/.lore/id
-# id_file=/path/to/repository/.urc/id
-
-repository_id="$(od -An -v -tx1 "$id_file" | tr -d ' \n')"
-test "${#repository_id}" -eq 32 || {
-  echo "Invalid Lore Repository ID: expected 16 bytes" >&2
-  exit 1
-}
-printf 'urc-%s\n' "$repository_id"
+bun run repository:id /path/to/repository
 ```
+
+There is no need to select the ID file manually, read it as text, or hash it
+again. For a non-standard directory layout, use
+`bun run repository:id --id-file <path>` to select the ID file explicitly.
 
 To use the Lore Server's authoritative storage inventory before authentication has been enabled, run this on the server or from a matching CLI with network access:
 

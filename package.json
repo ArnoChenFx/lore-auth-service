@@ -9,6 +9,7 @@
     "bootstrap": "bun run src/index.ts --bootstrap",
     "build:compile": "bun run scripts/compile.ts",
     "build:compile:all": "bun run scripts/compile.ts --all",
+    "repository:id": "bun run scripts/repository-id.ts",
     "test:compiled": "bun run scripts/smoke-compiled.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
