@@ -23,6 +23,12 @@ import { loadSync } from "@grpc/proto-loader";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 
+// 使用 Bun 的文件导入属性把 Proto 固化进独立可执行程序。开发模式下它们仍指向仓库
+// 中的源文件；Bun Compile 会把路径改写为 $bunfs 内部路径，proto-loader 可照常读取。
+import authProtoPath from "../proto/auth_api.proto" with { type: "file" };
+import rebacProtoPath from "../proto/rebac_api.proto" with { type: "file" };
+
+import { isStandaloneExecutable } from "./build-environment";
 import type { AuthServiceContext } from "./context";
 import {
   OWNER_PERMISSIONS,
@@ -72,12 +78,26 @@ export interface RunningGrpcServer {
   close(): Promise<void>;
 }
 
-function protoPath(filename: string): string {
-  return fileURLToPath(new URL(`../proto/${filename}`, import.meta.url));
+/**
+ * 普通 Bun 环境直接读取仓库中的 Proto，便于开发和测试时观察源文件变更；
+ * Bun Compile 产物则只使用 `with { type: "file" }` 生成的 `$bunfs` 内嵌路径。
+ */
+function loreProtoPaths(): [string, string] {
+  if (isStandaloneExecutable) {
+    if (Bun.embeddedFiles.length < 2) {
+      throw new Error("Standalone executable does not contain both embedded Proto files");
+    }
+    return [authProtoPath, rebacProtoPath];
+  }
+
+  return [
+    fileURLToPath(new URL("../proto/auth_api.proto", import.meta.url)),
+    fileURLToPath(new URL("../proto/rebac_api.proto", import.meta.url)),
+  ];
 }
 
 export function loadLoreProto(): LoadedLoreProto {
-  const definition = loadSync([protoPath("auth_api.proto"), protoPath("rebac_api.proto")], {
+  const definition = loadSync(loreProtoPaths(), {
     keepCase: true,
     longs: Number,
     enums: String,

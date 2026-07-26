@@ -7,6 +7,9 @@
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
     "bootstrap": "bun run src/index.ts --bootstrap",
+    "build:compile": "bun run scripts/compile.ts",
+    "build:compile:all": "bun run scripts/compile.ts --all",
+    "test:compiled": "bun run scripts/smoke-compiled.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },

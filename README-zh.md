@@ -66,6 +66,35 @@ curl http://localhost:8080/.well-known/jwks.json
 
 默认 gRPC 是明文端点，仅用于自动化测试和本地 API 开发。当前 Lore 客户端会把认证端点转换为 HTTPS，因此真实桌面登录必须使用下面的生产 TLS 配置。
 
+## 跨平台可执行程序
+
+项目使用 Bun Compile 生成不依赖目标机器预装 Bun 或 `node_modules` 的单文件程序。两个
+gRPC Proto 通过 Bun embedded files 固化在程序内部，部署时不需要额外复制 `proto/`。
+
+编译当前平台：
+
+```bash
+bun run build:compile
+bun run test:compiled dist/windows-x64/lore-auth.exe
+dist/windows-x64/lore-auth.exe -v
+```
+
+交叉编译全部支持目标：
+
+```bash
+bun run build:compile:all
+```
+
+也可以只编译一个目标，例如：
+
+```bash
+bun run build:compile --target=linux-x64
+```
+
+支持 `linux-x64`、`linux-arm64`、`windows-x64`、`macos-x64` 和
+`macos-arm64`。产物位于 `dist/<目标>/`，其中 Windows 程序名为
+`lore-auth.exe`，其他平台统一为 `lore-auth`。Linux 产物使用 musl。
+
 ## 生产环境配置
 
 准备 `auth.example.com` 一类 DNS 名称，以及 Lore Client 和 Lore Server 所在机器都信任的证书。服务可在 HTTP 与 gRPC 端口复用同一张证书。

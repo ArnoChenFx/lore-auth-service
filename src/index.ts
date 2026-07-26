@@ -7,7 +7,9 @@
 
 import { readFileSync } from "fs";
 
+import packageJson from "../package.json";
 import { handleAdminPanel } from "./admin-panel";
+import { isStandaloneExecutable } from "./build-environment";
 import { loadConfig } from "./config";
 import type { AuthServiceContext } from "./context";
 import {
@@ -31,7 +33,11 @@ import {
   setUserResourcePermissions,
   userCount,
 } from "./db";
-import { startGrpcServer, type RunningGrpcServer } from "./grpc-server";
+import {
+  loadLoreProto,
+  startGrpcServer,
+  type RunningGrpcServer,
+} from "./grpc-server";
 import {
   extractBearerToken,
   generateRefreshToken,
@@ -97,14 +103,21 @@ async function parseJsonBody(req: Request): Promise<Record<string, unknown> | nu
 async function parseFormBody(req: Request): Promise<Record<string, string> | null> {
   const length = Number(req.headers.get("content-length") ?? "0");
   if (length > 16 * 1024) return null;
+
+  // 浏览器原生登录表单没有文件字段，固定使用 URL 编码。服务端不接受 multipart，
+  // 因而无需调用 Bun 已弃用的 `formData()`，也不需要引入流式文件上传解析器。
+  const contentType = req.headers
+    .get("content-type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  if (contentType !== "application/x-www-form-urlencoded") return null;
+
   try {
-    const form = await req.formData();
-    return Object.fromEntries(
-      [...form.entries()].map(([key, value]) => [
-        key,
-        typeof value === "string" ? value : "",
-      ]),
-    );
+    const encoded = await req.text();
+    // Content-Length 可能缺失或不可信，因此读取后再次按 UTF-8 实际字节数限制。
+    if (new TextEncoder().encode(encoded).byteLength > 16 * 1024) return null;
+    return Object.fromEntries(new URLSearchParams(encoded));
   } catch {
     return null;
   }
@@ -511,8 +524,34 @@ export async function startAuthService(
 }
 
 async function main(): Promise<void> {
-  const context = await createAuthServiceContext();
   const args = process.argv.slice(2);
+
+  // 版本查询必须在加载配置、创建数据库和生成密钥之前返回，便于 CI 对编译产物执行
+  // 无副作用的冒烟检查，也方便运维人员确认当前部署的二进制版本。
+  if (args.includes("--version") || args.includes("-v")) {
+    console.log(packageJson.version);
+    return;
+  }
+
+  // 该诊断命令专门供发布流水线验证单文件产物：它会真实解析两个嵌入的 Proto，
+  // 但不会创建数据库、密钥或监听端口，因此可安全地在任意临时目录运行。
+  if (args.includes("--check-embedded-protos")) {
+    if (!isStandaloneExecutable) {
+      throw new Error("--check-embedded-protos requires a standalone executable");
+    }
+    const loaded = loadLoreProto();
+    console.log(
+      JSON.stringify({
+        status: "ok",
+        embedded_file_count: Bun.embeddedFiles.length,
+        auth_service: Boolean(loaded.authService),
+        rebac_service: Boolean(loaded.rebacService),
+      }),
+    );
+    return;
+  }
+
+  const context = await createAuthServiceContext();
   const tokenFor = args.find((argument) => argument.startsWith("--token-for="));
 
   if (args.includes("--bootstrap") || userCount(context.config.dbPath) === 0) {
@@ -540,6 +579,7 @@ Lore Auth Service started
   gRPC:        ${grpcScheme}://${context.config.grpcHost}:${service.grpc.port}
   JWKS:        ${context.config.publicBaseUrl}/.well-known/jwks.json
   Browser:     ${context.config.publicBaseUrl}/login
+  Admin Panel: ${context.config.publicBaseUrl}/admin
   Issuer:      ${context.config.issuer}
   Audience:    ${context.config.audience.join(", ")}
   Database:    ${context.config.dbPath}
@@ -562,7 +602,9 @@ Lore Auth Service started
   process.on("SIGTERM", shutdown);
 }
 
-if (import.meta.main) {
+// Bun Compile 打包后 `import.meta.main` 可能为 false，因此独立可执行程序必须通过
+// 编译期常量显式进入主函数；普通源码执行仍使用 Bun 原生的入口判断。
+if (import.meta.main || isStandaloneExecutable) {
   main().catch((error) => {
     console.error("Fatal:", error);
     process.exit(1);

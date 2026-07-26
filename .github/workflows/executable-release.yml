@@ -1,0 +1,116 @@
+# Build and publish versioned Lore Auth Service standalone executables.
+name: Executable Build
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify source and release version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(bun -p "require('./package.json').version")"
+          if [[ "$tag_version" != "$package_version" ]]; then
+            echo "Tag version $tag_version does not match package version $package_version."
+            exit 1
+          fi
+
+      - name: Run type checking
+        run: bun run typecheck
+
+      - name: Run tests
+        run: bun test
+
+  build:
+    name: Build and package ${{ matrix.target }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            executable: lore-auth
+          - target: linux-arm64
+            executable: lore-auth
+          - target: windows-x64
+            executable: lore-auth.exe
+          - target: macos-x64
+            executable: lore-auth
+          - target: macos-arm64
+            executable: lore-auth
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile target
+        run: bun run build:compile --target=${{ matrix.target }}
+
+      - name: Verify embedded Proto files
+        if: matrix.target == 'linux-x64'
+        run: bun run test:compiled dist/${{ matrix.target }}/lore-auth
+
+      - name: Package executable
+        shell: bash
+        run: |
+          archive="$GITHUB_WORKSPACE/dist/lore-auth-${{ matrix.target }}.zip"
+          cd "$GITHUB_WORKSPACE/dist/${{ matrix.target }}"
+          zip -9 "$archive" "${{ matrix.executable }}"
+
+      - name: Upload packaged executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: lore-auth-${{ matrix.target }}
+          path: dist/lore-auth-${{ matrix.target }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish ${{ github.ref_name }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged executables
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lore-auth-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: release-assets/*.zip

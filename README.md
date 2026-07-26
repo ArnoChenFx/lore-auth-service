@@ -66,6 +66,37 @@ Open `http://localhost:8080/admin` to manage users, register repositories create
 
 The default gRPC endpoint is insecure and intended only for automated tests and local API development. The current Lore client converts its auth endpoint to HTTPS, so a real desktop login requires the production TLS setup below.
 
+## Cross-platform executables
+
+The project uses Bun Compile to produce standalone executables that do not require Bun,
+Node.js, or `node_modules` on the target machine. Both gRPC Proto files are embedded in
+the executable through Bun embedded files, so the `proto/` directory does not need to be
+copied during deployment.
+
+Compile for the current platform:
+
+```bash
+bun run build:compile
+bun run test:compiled dist/windows-x64/lore-auth.exe
+dist/windows-x64/lore-auth.exe -v
+```
+
+Cross-compile every supported target:
+
+```bash
+bun run build:compile:all
+```
+
+Compile one explicit target:
+
+```bash
+bun run build:compile --target=linux-x64
+```
+
+Supported targets are `linux-x64`, `linux-arm64`, `windows-x64`, `macos-x64`, and
+`macos-arm64`. Outputs are written to `dist/<target>/`. The Windows executable is named
+`lore-auth.exe`; every other platform uses `lore-auth`. Linux executables use musl.
+
 ## Production setup
 
 Use a DNS name such as `auth.example.com` and a certificate trusted by the machines running Lore Client and Lore Server. The same certificate can be used by this service on its HTTP and gRPC ports.

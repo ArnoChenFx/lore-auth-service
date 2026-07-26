@@ -116,11 +116,13 @@ describe("browser login flow", () => {
     expect(page).toContain('name="password"');
     expect(page).not.toContain("eyJ");
 
-    const form = new FormData();
-    form.set("session_code", session.sessionCode);
-    form.set("client_state", "browser-client-state");
-    form.set("username", "alice");
-    form.set("password", "alice-password");
+    // HTML 表单默认提交 application/x-www-form-urlencoded；测试保持与真实浏览器一致。
+    const form = new URLSearchParams({
+      session_code: session.sessionCode,
+      client_state: "browser-client-state",
+      username: "alice",
+      password: "alice-password",
+    });
     const approvalResponse = await handle(
       new Request("https://auth.example.test/auth/session/approve", {
         method: "POST",
@@ -139,6 +141,25 @@ describe("browser login flow", () => {
         session.sessionCode,
       )?.username,
     ).toBe("alice");
+  });
+
+  test("rejects multipart browser approval bodies", async () => {
+    const context = await createTestContext();
+    const handle = createHttpHandler(context);
+    const form = new FormData();
+    form.set("session_code", "unused");
+    form.set("client_state", "unused");
+    form.set("username", "alice");
+    form.set("password", "alice-password");
+
+    const response = await handle(
+      new Request("https://auth.example.test/auth/session/approve", {
+        method: "POST",
+        body: form,
+      }),
+    );
+
+    expect(response.status).toBe(400);
   });
 
   test("renders the administration page in English with language and theme controls", async () => {
