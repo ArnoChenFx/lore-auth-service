@@ -1,8 +1,8 @@
 # Lore Auth Service
 
-Lore Auth Service is a TypeScript/Bun implementation of Lore's native browser authentication and repository authorization protocols. It exposes the `ucs.auth.UrcAuthApi` and `ucs.auth.RebacApi` gRPC services, issues Lore-compatible RS256 JWTs, publishes JWKS, and provides a small browser administration panel.
+Lore Auth Service is a TypeScript/Bun implementation of <a href="https://github.com/EpicGames/lore">Epic Games Lore</a>'s native browser authentication and repository authorization protocols. It exposes the `ucs.auth.UrcAuthApi` and `ucs.auth.RebacApi` gRPC services, issues Lore-compatible RS256 JWTs, publishes JWKS, and provides a small browser administration panel.
 
-[Chinese documentation](README-zh.md)
+[中文文档](README-zh.md)
 
 ## What is implemented
 
@@ -343,6 +343,8 @@ services:
 Alternatively, terminate HTTPS and gRPC TLS at a reverse proxy. The public gRPC route must preserve HTTP/2 gRPC semantics; a normal HTTP/1 proxy is not sufficient.
 
 ## Administration
+
+![Admin Panel](docs/assets/admin-panel.png)
 
 The administration panel is available at `/admin`. The administrator sign-in card is centered on the page, and a compact administration layout is restored after sign-in. The repository, user, permission controls, and save button share one configuration row on desktop screens. The administration and browser authentication pages display English by default and provide a language switch at the top of the page; the selected language is saved in `localStorage`. The administration page also supports light and dark themes, uses neutral dark-gray backgrounds in dark mode, and follows the system theme on the first visit. Access and refresh tokens live only in the current tab's `sessionStorage` and are removed when the tab closes or the operator signs out.
 

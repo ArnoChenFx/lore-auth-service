@@ -1,6 +1,6 @@
 # Lore Auth Service
 
-Lore Auth Service 是基于 TypeScript 与 Bun 实现的 Lore 原生浏览器认证及仓库授权服务。它提供 `ucs.auth.UrcAuthApi`、`ucs.auth.RebacApi` gRPC 服务，签发 Lore 兼容的 RS256 JWT，发布 JWKS，并附带轻量浏览器管理后台。
+Lore Auth Service 是基于 TypeScript 与 Bun 实现的 [Epic Games Lore](https://github.com/EpicGames/lore) 原生浏览器认证及仓库授权服务。它提供 `ucs.auth.UrcAuthApi`、`ucs.auth.RebacApi` gRPC 服务，签发 Lore 兼容的 RS256 JWT，发布 JWKS，并附带轻量浏览器管理后台。
 
 [English](README.md)
 
@@ -335,6 +335,8 @@ services:
 也可以由反向代理终止 HTTPS 与 gRPC TLS，但公开的 gRPC 路由必须保留 HTTP/2 gRPC 语义，普通 HTTP/1 代理无法工作。
 
 ## 管理与仓库权限
+
+![管理面板](docs/assets/admin-panel.png)
 
 管理后台位于 `/admin`。管理员登录卡片在页面中居中显示，进入控制台后自动恢复紧凑的管理布局。仓库、用户、权限选项与保存按钮在桌面端显示于同一配置行。管理页面和浏览器认证页默认显示英文，用户可在页面顶部切换中文；语言选择通过 `localStorage` 记住。管理页面还提供亮色与暗色模式，暗色模式使用中性暗灰背景，并在首次访问时跟随系统主题。Access Token 与 Refresh Token 只保存在当前标签页的 `sessionStorage` 中，关闭标签页或退出登录后会被清除。
 
