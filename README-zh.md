@@ -30,7 +30,7 @@
 
 ### 前置条件
 
-- Bun >= 1.1 (https://bun.sh)
+- Bun >= 1.3 (https://bun.sh)
 
 ### 安装依赖
 

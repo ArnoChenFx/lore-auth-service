@@ -30,7 +30,7 @@ A JWT authentication service built with TypeScript + Bun.js, providing JWT issua
 
 ### Prerequisites
 
-- Bun >= 1.1 (https://bun.sh)
+- Bun >= 1.3 (https://bun.sh)
 
 ### Install Dependencies
 
