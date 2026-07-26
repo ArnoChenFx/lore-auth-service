@@ -6,19 +6,17 @@
 
 ## 工作原理
 
-```
-┌────────┐    1. login (user/pass)    ┌──────────────┐
-│ Client │ ──────────────────────────► │  Lore Auth   │
-│  (CLI) │ ◄────────────────────────── │  (this svc)  │
-│        │    2. JWT (signed by RSA)   │  port :8080  │
-└───┬────┘                             └──────┬───────┘
-    │                                         │
-    │ 3. push/clone (Bearer JWT)              │ 4. JWKS fetch (startup + on unknown kid)
-    ▼                                         ▼
-┌──────────────┐                      ┌──────────────┐
-│  Lore Server │ ────────────────────►│  Lore Auth   │
-│  port :41337 │   verify JWT via JWKS │  /.well-known/jwks.json
-└──────────────┘                      └──────────────┘
+```mermaid
+flowchart LR
+    C["Client\n(CLI)"]
+    A["Lore Auth\n(this svc)\nport :8080"]
+    S["Lore Server\nport :41337"]
+    J["Lore Auth\n/.well-known/jwks.json"]
+
+    C -->|"1. login (用户名/密码)"| A
+    A -->|"2. JWT (RSA 签名)"| C
+    C -->|"3. push/clone (Bearer JWT)"| S
+    S -->|"4. JWKS 拉取\n(启动时 / 未知 kid)\n通过 JWKS 验证 JWT"| J
 ```
 
 1. 客户端用用户名密码登录 Lore Auth，拿到 JWT
