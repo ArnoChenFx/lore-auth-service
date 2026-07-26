@@ -62,7 +62,7 @@ curl http://localhost:8080/health_check
 curl http://localhost:8080/.well-known/jwks.json
 ```
 
-Open `http://localhost:8080/admin` to manage users, register repositories created before authentication was enabled, and assign repository access.
+Open `http://localhost:8080/admin` to manage users, register repositories created before authentication was enabled, and assign repository access. The administration and browser authentication pages use English by default and can be switched to Chinese. The administration page also supports light and dark themes. Language and theme preferences are saved in the current browser.
 
 The default gRPC endpoint is insecure and intended only for automated tests and local API development. The current Lore client converts its auth endpoint to HTTPS, so a real desktop login requires the production TLS setup below.
 
@@ -296,7 +296,7 @@ Alternatively, terminate HTTPS and gRPC TLS at a reverse proxy. The public gRPC 
 
 ## Administration
 
-The administration panel is available at `/admin`. Its access and refresh tokens live only in the current tab's `sessionStorage` and are removed when the tab closes or the operator signs out.
+The administration panel is available at `/admin`. The administrator sign-in card is centered on the page, and a compact administration layout is restored after sign-in. The repository, user, permission controls, and save button share one configuration row on desktop screens. The administration and browser authentication pages display English by default and provide a language switch at the top of the page; the selected language is saved in `localStorage`. The administration page also supports light and dark themes, uses neutral dark-gray backgrounds in dark mode, and follows the system theme on the first visit. Access and refresh tokens live only in the current tab's `sessionStorage` and are removed when the tab closes or the operator signs out.
 
 New repositories created through Lore ReBAC are registered automatically and their creator receives `read`, `write`, and `admin`. For repositories that existed before auth was enabled:
 

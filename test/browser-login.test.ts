@@ -99,6 +99,19 @@ describe("browser login flow", () => {
     expect(pageResponse.headers.get("Content-Security-Policy")).toContain(
       "form-action 'self'",
     );
+    expect(pageResponse.headers.get("Content-Security-Policy")).toContain(
+      "script-src 'unsafe-inline'",
+    );
+    expect(page).toContain("<html lang=\"en\">");
+    expect(page).toContain('name="color-scheme" content="light dark"');
+    expect(page).toContain("prefers-color-scheme: dark");
+    expect(page).toContain('id="themeToggle"');
+    expect(page).toContain("lore_auth_theme");
+    expect(page).toContain("Authorize Lore Client");
+    expect(page).toContain('data-zh="授权 Lore Client"');
+    expect(page).not.toContain('class="rail"');
+    expect(page).not.toContain('class="mark"');
+    expect(page).toContain("<svg viewBox=\"0 0 24 24\"");
     expect(page).toContain('name="username"');
     expect(page).toContain('name="password"');
     expect(page).not.toContain("eyJ");
@@ -126,6 +139,27 @@ describe("browser login flow", () => {
         session.sessionCode,
       )?.username,
     ).toBe("alice");
+  });
+
+  test("renders the administration page in English with language and theme controls", async () => {
+    const context = await createTestContext();
+    const handle = createHttpHandler(context);
+    const response = await handle(
+      new Request("https://auth.example.test/admin"),
+    );
+    const page = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(page).toContain("<html lang=\"en\">");
+    expect(page).toContain("Authentication administration");
+    expect(page).toContain('id="languageToggle"');
+    expect(page).toContain('id="themeToggle"');
+    expect(page).toContain("lore_auth_admin_language");
+    expect(page).toContain('<body data-view="login">');
+    expect(page).toContain('class="login-actions"');
+    expect(page).toContain('class="access-config-row"');
+    expect(page).toContain('class="access-actions"');
+    expect(page).not.toContain("brand-mark");
   });
 
   test("rejects an unknown or expired browser session", async () => {

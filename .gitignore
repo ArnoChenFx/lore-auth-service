@@ -3,3 +3,4 @@ keys/
 *.db
 .env
 dist/
+AUTH_INTEGRATION.md

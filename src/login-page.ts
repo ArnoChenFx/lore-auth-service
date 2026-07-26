@@ -14,71 +14,106 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#039;");
 }
 
-function pageShell(title: string, body: string): string {
+interface LocalizedText {
+  en: string;
+  zh: string;
+}
+
+function pageShell(title: LocalizedText, body: string): string {
   return `<!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>${escapeHtml(title)} · Lore Auth</title>
+  <meta name="color-scheme" content="light dark">
+  <title>${escapeHtml(title.en)} · Lore Auth</title>
+  <script>
+    // 首次访问跟随系统主题；用户手动选择后优先恢复本地偏好。
+    (function restoreTheme() {
+      const savedTheme = localStorage.getItem('lore_auth_theme');
+      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      document.documentElement.dataset.theme =
+        savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : systemTheme;
+    })();
+  </script>
   <style>
     :root {
-      --ink: #e9edf4;
-      --muted: #8e99aa;
-      --line: #2a3340;
-      --panel: #111820;
-      --panel-strong: #17212b;
-      --blue: #78a4ff;
-      --blue-strong: #9bbcff;
-      --green: #6dd6a8;
-      --red: #ff8f8f;
-      --bg: #091016;
+      color-scheme: light;
+      --ink: #1c1c1c;
+      --muted: #686868;
+      --line: #d7d7d7;
+      --line-strong: #b8b8b8;
+      --panel: #ffffff;
+      --panel-muted: #f2f2f2;
+      --input-focus: #f7f7f7;
+      --accent: #252525;
+      --accent-strong: #000000;
+      --button-ink: #ffffff;
+      --focus-accent: #245edb;
+      --green: #247249;
+      --red: #b42318;
+      --bg: #f3f3f3;
+      --focus: rgba(36, 94, 219, .22);
+      --intro: #505050;
+      --label: #3c3c3c;
+      --input-hover: #7a7a7a;
+      --message-bg: #fdf0ee;
+      --message-text: #8f1d16;
+      --footer: #767676;
+      --shadow: 0 24px 64px rgba(25,25,25,.12);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --ink: #f0f0f0;
+      --muted: #a3a3a3;
+      --line: #333333;
+      --line-strong: #505050;
+      --panel: #1b1b1b;
+      --panel-muted: #131313;
+      --input-focus: #202020;
+      --accent: #dadde1;
+      --accent-strong: #ffffff;
+      --button-ink: #141414;
+      --focus-accent: #7da2f8;
+      --green: #81c6a0;
+      --red: #f29a92;
+      --bg: #101010;
+      --focus: rgba(125, 162, 248, .28);
+      --intro: #bfc2c6;
+      --label: #d0d0d0;
+      --input-hover: #707070;
+      --message-bg: #2b1e1d;
+      --message-text: #f5b4ae;
+      --footer: #7d7d7d;
+      --shadow: 0 24px 64px rgba(0,0,0,.3);
     }
     * { box-sizing: border-box; }
     html, body { min-height: 100%; }
     body {
       margin: 0;
-      background:
-        linear-gradient(rgba(120,164,255,.035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(120,164,255,.035) 1px, transparent 1px),
-        radial-gradient(circle at 18% 12%, rgba(120,164,255,.12), transparent 32rem),
-        var(--bg);
-      background-size: 28px 28px, 28px 28px, auto, auto;
+      background: var(--bg);
       color: var(--ink);
       font-family: Bahnschrift, "Aptos Narrow", "Segoe UI", sans-serif;
       display: grid;
       place-items: center;
-      padding: 28px;
+      padding: 24px;
     }
     .frame {
       width: min(100%, 470px);
       border: 1px solid var(--line);
-      background: color-mix(in srgb, var(--panel) 94%, transparent);
-      box-shadow: 0 24px 70px rgba(0,0,0,.38);
+      border-radius: 14px;
+      overflow: hidden;
+      background: var(--panel);
+      box-shadow: var(--shadow);
       animation: arrive .32s ease-out both;
-    }
-    .rail {
-      height: 4px;
-      background: linear-gradient(90deg, var(--blue) 0 42%, #35465b 42% 68%, var(--green) 68%);
     }
     header {
       display: grid;
-      grid-template-columns: 42px 1fr auto;
+      grid-template-columns: 1fr auto;
       align-items: center;
       gap: 13px;
       padding: 18px 20px;
       border-bottom: 1px solid var(--line);
-    }
-    .mark {
-      width: 42px;
-      height: 42px;
-      border: 1px solid #415064;
-      display: grid;
-      place-items: center;
-      color: var(--blue-strong);
-      font: 700 18px/1 Consolas, monospace;
-      background: #0d141b;
     }
     .eyebrow {
       margin: 0 0 3px;
@@ -93,10 +128,51 @@ function pageShell(title: string, body: string): string {
       font: 600 10px/1 Consolas, monospace;
       letter-spacing: .08em;
     }
-    main { padding: 24px 20px 22px; }
+    .header-status { display: flex; align-items: center; gap: 10px; }
+    .language-toggle, .theme-toggle {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      font: 600 10px/1 Bahnschrift, "Segoe UI", sans-serif;
+      letter-spacing: .04em;
+    }
+    .language-toggle svg {
+      width: 15px;
+      height: 15px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.6;
+    }
+    .theme-toggle__icon {
+      width: 16px;
+      height: 16px;
+      display: grid;
+      place-items: center;
+    }
+    .theme-toggle__icon svg {
+      grid-area: 1 / 1;
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .theme-toggle__sun { display: none; }
+    :root[data-theme="dark"] .theme-toggle__moon { display: none; }
+    :root[data-theme="dark"] .theme-toggle__sun { display: block; }
+    .language-toggle:hover, .theme-toggle:hover { background: var(--panel-muted); color: var(--ink); }
+    main { padding: 26px 20px 24px; }
     .intro {
       margin: 0 0 22px;
-      color: #bdc6d3;
+      color: var(--intro);
       font-size: 13px;
       line-height: 1.7;
     }
@@ -104,51 +180,67 @@ function pageShell(title: string, body: string): string {
     label {
       display: block;
       margin: 0 0 7px;
-      color: #cbd3de;
+      color: var(--label);
       font-size: 12px;
       letter-spacing: .02em;
     }
     input {
       width: 100%;
-      height: 42px;
+      height: 44px;
       margin: 0 0 16px;
-      border: 1px solid #354152;
-      border-radius: 0;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
       outline: 0;
-      background: #0b1218;
+      background: var(--panel-muted);
       color: var(--ink);
       padding: 0 12px;
       font: 14px/1.2 Bahnschrift, "Segoe UI", sans-serif;
       transition: border-color .14s, background .14s;
     }
-    input:hover { border-color: #52647c; }
+    input:hover { border-color: var(--input-hover); }
     input:focus {
-      border-color: var(--blue);
-      outline: 2px solid rgba(120,164,255,.2);
+      border-color: var(--focus-accent);
+      outline: 3px solid var(--focus);
       outline-offset: 1px;
-      background: #0e161e;
+      background: var(--input-focus);
+    }
+    /*
+     * 浏览器自动填充会自行覆盖输入框背景；使用大尺寸内阴影强制保持中性灰，
+     * 同时保留账号文字和光标的可读性。
+     */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover {
+      -webkit-text-fill-color: var(--ink);
+      -webkit-box-shadow: 0 0 0 1000px var(--panel-muted) inset;
+      caret-color: var(--ink);
+    }
+    input:-webkit-autofill:focus {
+      -webkit-text-fill-color: var(--ink);
+      -webkit-box-shadow: 0 0 0 1000px var(--input-focus) inset;
+      caret-color: var(--ink);
     }
     button {
       width: 100%;
-      height: 43px;
-      border: 1px solid #98b7f8;
-      border-radius: 0;
-      background: var(--blue);
-      color: #07111d;
+      height: 44px;
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      background: var(--accent);
+      color: var(--button-ink);
       font: 650 13px/1 Bahnschrift, "Segoe UI", sans-serif;
       letter-spacing: .03em;
       cursor: pointer;
       transition: background .14s, transform .08s;
     }
-    button:hover { background: var(--blue-strong); }
+    button:hover { background: var(--accent-strong); }
     button:active { transform: translateY(1px); }
-    button:focus-visible { outline: 2px solid #dce8ff; outline-offset: 2px; }
+    button:focus-visible { outline: 2px solid var(--focus-accent); outline-offset: 2px; }
     .message {
       margin: 0 0 18px;
       padding: 11px 12px;
-      border-left: 3px solid var(--red);
-      background: rgba(255,143,143,.08);
-      color: #ffc1c1;
+      border: 1px solid var(--red);
+      border-radius: 8px;
+      background: var(--message-bg);
+      color: var(--message-text);
       font-size: 12px;
       line-height: 1.55;
     }
@@ -160,7 +252,8 @@ function pageShell(title: string, body: string): string {
       width: 58px;
       height: 58px;
       margin: 0 auto 18px;
-      border: 1px solid rgba(109,214,168,.62);
+      border: 1px solid var(--green);
+      border-radius: 50%;
       color: var(--green);
       display: grid;
       place-items: center;
@@ -174,7 +267,7 @@ function pageShell(title: string, body: string): string {
       gap: 12px;
       padding: 12px 20px;
       border-top: 1px solid var(--line);
-      color: #6f7b8b;
+      color: var(--footer);
       font: 10px/1.3 Consolas, monospace;
       letter-spacing: .04em;
     }
@@ -186,22 +279,104 @@ function pageShell(title: string, body: string): string {
       .frame { animation: none; }
       * { transition: none !important; }
     }
+    @media (max-width: 420px) {
+      body { padding: 14px; }
+      header { grid-template-columns: 1fr auto; padding-inline: 16px; }
+      .live { display: none; }
+      main { padding-inline: 16px; }
+      footer { padding-inline: 16px; }
+    }
   </style>
 </head>
 <body>
   <section class="frame" aria-labelledby="page-title">
-    <div class="rail"></div>
     <header>
-      <div class="mark" aria-hidden="true">L/</div>
       <div>
         <p class="eyebrow">Lore Remote Identity</p>
-        <h1 id="page-title">${escapeHtml(title)}</h1>
+        <h1 id="page-title" data-en="${escapeHtml(title.en)}" data-zh="${escapeHtml(title.zh)}">${escapeHtml(title.en)}</h1>
       </div>
-      <span class="live">● SECURE</span>
+      <div class="header-status">
+        <button id="languageToggle" class="language-toggle" type="button" aria-label="切换为中文">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3z"></path>
+          </svg>
+        </button>
+        <button id="themeToggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">
+          <span class="theme-toggle__icon" aria-hidden="true">
+            <svg class="theme-toggle__moon" viewBox="0 0 24 24">
+              <path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2z"></path>
+            </svg>
+            <svg class="theme-toggle__sun" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="3.5"></circle>
+              <path d="M12 2.5v2M12 19.5v2M4.8 4.8l1.4 1.4M17.8 17.8l1.4 1.4M2.5 12h2M19.5 12h2M4.8 19.2l1.4-1.4M17.8 6.2l1.4-1.4"></path>
+            </svg>
+          </span>
+        </button>
+        <span class="live">● SECURE</span>
+      </div>
     </header>
     <main>${body}</main>
     <footer><span>AUTHN / BROWSER SESSION</span><span>JWT · RS256</span></footer>
   </section>
+  <script>
+    // 认证页默认使用英文，仅在用户主动切换后恢复中文偏好。
+    const languageKey = 'lore_auth_language';
+    const themeKey = 'lore_auth_theme';
+    const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const savedLanguage = localStorage.getItem(languageKey);
+    let currentLanguage = savedLanguage === 'zh' ? 'zh' : 'en';
+
+    // 同步主题按钮图标和无障碍文本；按钮描述下一步将执行的动作。
+    function syncThemeToggle() {
+      const isDark = document.documentElement.dataset.theme === 'dark';
+      const label = currentLanguage === 'zh'
+        ? (isDark ? '切换为亮色模式' : '切换为暗色模式')
+        : (isDark ? 'Switch to light mode' : 'Switch to dark mode');
+      const toggle = document.getElementById('themeToggle');
+      toggle.setAttribute('aria-label', label);
+      toggle.setAttribute('title', label);
+      toggle.setAttribute('aria-pressed', String(isDark));
+    }
+
+    /**
+     * 文案直接存放在受服务端转义的数据属性中，不执行任何动态 HTML，
+     * 从而在支持即时切换的同时避免把错误信息或用户名解释为标记。
+     */
+    function applyLanguage() {
+      document.documentElement.lang = currentLanguage === 'zh' ? 'zh-CN' : 'en';
+      document.querySelectorAll('[data-en][data-zh]').forEach(element => {
+        element.textContent = element.dataset[currentLanguage];
+      });
+      const pageTitle = document.getElementById('page-title').dataset[currentLanguage];
+      document.title = pageTitle + ' · Lore Auth';
+      const toggle = document.getElementById('languageToggle');
+      const label = currentLanguage === 'zh' ? 'Switch to English' : '切换为中文';
+      toggle.setAttribute('aria-label', label);
+      toggle.setAttribute('title', label);
+      syncThemeToggle();
+    }
+
+    document.getElementById('languageToggle').addEventListener('click', function() {
+      currentLanguage = currentLanguage === 'zh' ? 'en' : 'zh';
+      localStorage.setItem(languageKey, currentLanguage);
+      applyLanguage();
+    });
+
+    // 手动切换后保存偏好；未手动选择时继续响应操作系统主题变化。
+    document.getElementById('themeToggle').addEventListener('click', function() {
+      const nextTheme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = nextTheme;
+      localStorage.setItem(themeKey, nextTheme);
+      syncThemeToggle();
+    });
+    systemTheme.addEventListener('change', function(event) {
+      if (localStorage.getItem(themeKey)) return;
+      document.documentElement.dataset.theme = event.matches ? 'dark' : 'light';
+      syncThemeToggle();
+    });
+    applyLanguage();
+  </script>
 </body>
 </html>`;
 }
@@ -209,53 +384,54 @@ function pageShell(title: string, body: string): string {
 export interface LoginPageOptions {
   sessionCode: string;
   clientState: string;
-  error?: string;
+  error?: LocalizedText;
 }
 
 export function renderLoginPage(options: LoginPageOptions): string {
   const error = options.error
-    ? `<div class="message" role="alert">${escapeHtml(options.error)}</div>`
+    ? `<div class="message" role="alert" data-en="${escapeHtml(options.error.en)}" data-zh="${escapeHtml(options.error.zh)}">${escapeHtml(options.error.en)}</div>`
     : "";
   return pageShell(
-    "授权 Lore Client",
-    `<p class="intro">
-      使用已注册的 Lore 账号批准本次桌面登录。凭据只会提交给认证服务。
-      <br><small>Sign in to approve this Lore desktop session.</small>
-    </p>
+    { en: "Authorize Lore Client", zh: "授权 Lore Client" },
+    `<p class="intro" data-en="Sign in with your registered Lore account to approve this desktop session. Your credentials are sent only to the authentication service." data-zh="使用已注册的 Lore 账号批准本次桌面登录。凭据只会提交给认证服务。">Sign in with your registered Lore account to approve this desktop session. Your credentials are sent only to the authentication service.</p>
     ${error}
     <form method="post" action="/auth/session/approve">
       <input type="hidden" name="session_code" value="${escapeHtml(options.sessionCode)}">
       <input type="hidden" name="client_state" value="${escapeHtml(options.clientState)}">
-      <label for="username">用户名 / Username</label>
+      <label for="username" data-en="Username" data-zh="用户名">Username</label>
       <input id="username" name="username" type="text" required maxlength="128"
              autocomplete="username" autofocus>
-      <label for="password">密码 / Password</label>
+      <label for="password" data-en="Password" data-zh="密码">Password</label>
       <input id="password" name="password" type="password" required maxlength="1024"
              autocomplete="current-password">
-      <button type="submit">批准并登录 / APPROVE SESSION</button>
+      <button type="submit" data-en="Approve and sign in" data-zh="批准并登录">Approve and sign in</button>
     </form>`,
   );
 }
 
 export function renderLoginSuccess(username: string): string {
   return pageShell(
-    "认证完成",
+    { en: "Authentication complete", zh: "认证完成" },
     `<div class="success">
       <div class="success-icon" aria-hidden="true">✓</div>
-      <h2>账号 ${escapeHtml(username)} 已授权</h2>
-      <p>Lore Client 正在领取安全凭据，现在可以关闭此页面。<br>
-         Lore Client is receiving the credential. You may close this page.</p>
+      <h2 data-en="Account ${escapeHtml(username)} authorized" data-zh="账号 ${escapeHtml(username)} 已授权">Account ${escapeHtml(username)} authorized</h2>
+      <p data-en="Lore Client is receiving the secure credential. You may close this page." data-zh="Lore Client 正在领取安全凭据，现在可以关闭此页面。">Lore Client is receiving the secure credential. You may close this page.</p>
     </div>`,
   );
 }
 
-export function renderInvalidSession(message = "登录会话无效或已经过期，请返回 Lore Client 重试。"): string {
+export function renderInvalidSession(
+  message: LocalizedText = {
+    en: "The authentication session is invalid or has expired. Return to Lore Client and try again.",
+    zh: "登录会话无效或已经过期，请返回 Lore Client 重试。",
+  },
+): string {
   return pageShell(
-    "会话不可用",
+    { en: "Session unavailable", zh: "会话不可用" },
     `<div class="success">
-      <div class="success-icon" style="color:var(--red);border-color:rgba(255,143,143,.55)" aria-hidden="true">!</div>
-      <h2>无法继续认证</h2>
-      <p>${escapeHtml(message)}<br>The authentication session cannot be used.</p>
+      <div class="success-icon" style="color:var(--red);border-color:var(--red)" aria-hidden="true">!</div>
+      <h2 data-en="Authentication cannot continue" data-zh="无法继续认证">Authentication cannot continue</h2>
+      <p data-en="${escapeHtml(message.en)}" data-zh="${escapeHtml(message.zh)}">${escapeHtml(message.en)}</p>
     </div>`,
   );
 }

@@ -72,7 +72,7 @@ function html(content: string, status = 200): Response {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
       "Content-Security-Policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
@@ -337,7 +337,13 @@ async function handleBrowserSessionApproval(
   const username = body?.username?.trim() ?? "";
   const password = body?.password ?? "";
   if (!sessionCode || !clientState || !username || !password) {
-    return html(renderInvalidSession("认证请求缺少必要字段，请返回 Lore Client 重试。"), 400);
+    return html(
+      renderInvalidSession({
+        en: "Required authentication fields are missing. Return to Lore Client and try again.",
+        zh: "认证请求缺少必要字段，请返回 Lore Client 重试。",
+      }),
+      400,
+    );
   }
 
   const result = approveAuthSession(
@@ -356,8 +362,14 @@ async function handleBrowserSessionApproval(
   }
   const message =
     result.reason === "locked"
-      ? `尝试次数过多，请在 ${result.retryAfterSeconds ?? 60} 秒后重试。`
-      : "用户名或密码不正确。";
+      ? {
+          en: `Too many attempts. Try again in ${result.retryAfterSeconds ?? 60} seconds.`,
+          zh: `尝试次数过多，请在 ${result.retryAfterSeconds ?? 60} 秒后重试。`,
+        }
+      : {
+          en: "The username or password is incorrect.",
+          zh: "用户名或密码不正确。",
+        };
   return html(renderLoginPage({ sessionCode, clientState, error: message }), 401);
 }
 
