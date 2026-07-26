@@ -239,9 +239,14 @@ LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
 | GET | `/health_check` | none | Health check |
 | POST | `/auth/login` | none | Username/password login, returns JWT |
 | GET | `/auth/me` | Bearer | Verify current token, return user info |
+| GET | `/admin` | none | Browser-based admin panel for managing users |
 | POST | `/admin/users` | Bearer (admin) | Create a user |
 | GET | `/admin/users` | Bearer (admin) | List all users |
 | DELETE | `/admin/users/:username` | Bearer (admin) | Delete a user |
+
+### Admin Panel
+
+Open `http://localhost:8080/admin` in a browser and log in with an admin account. From the panel you can list, create, and delete users without using `curl`.
 
 ## Configuration
 

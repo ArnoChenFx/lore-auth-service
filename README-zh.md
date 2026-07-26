@@ -239,9 +239,14 @@ LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
 | GET | `/health_check` | 无 | 健康检查 |
 | POST | `/auth/login` | 无 | 用户名密码登录，返回 JWT |
 | GET | `/auth/me` | Bearer | 验证当前 token，返回用户信息 |
+| GET | `/admin` | 无 | 浏览器端管理员面板，管理用户 |
 | POST | `/admin/users` | Bearer (admin) | 创建用户 |
 | GET | `/admin/users` | Bearer (admin) | 列出所有用户 |
 | DELETE | `/admin/users/:username` | Bearer (admin) | 删除用户 |
+
+### 管理员面板
+
+在浏览器打开 `http://localhost:8080/admin`，使用 admin 账号登录后即可在页面上列出、创建和删除用户，无需使用 `curl`。
 
 ## 配置参数
 

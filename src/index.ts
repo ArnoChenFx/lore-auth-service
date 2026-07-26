@@ -6,6 +6,7 @@
  *   GET  /health_check              — Health check
  *   POST /auth/login                — User login, returns JWT
  *   GET  /auth/me                   — Verify token, return current user info
+ *   GET  /admin                    — Admin panel (HTML UI)
  *   POST /admin/users               — Create a user (requires admin token)
  *   GET  /admin/users               — List users (requires admin token)
  *   DEL  /admin/users/:username     — Delete a user (requires admin token)
@@ -23,6 +24,7 @@ import {
   userCount,
 } from "./db";
 import { issueToken, verifyToken, extractBearerToken, type TokenPayload } from "./jwt";
+import { handleAdminPanel } from "./admin-panel";
 
 // ─── Types ──────────────────────────────────────────
 
@@ -236,6 +238,11 @@ async function main() {
           return handleMe(ctx, req);
         }
 
+        // ── Admin panel (HTML UI) ──
+        if (path === "/admin" && method === "GET") {
+          return handleAdminPanel();
+        }
+
         // ── Admin endpoints ──
         if (path === "/admin/users" && method === "POST") {
           return handleCreateUser(ctx, req);
@@ -270,6 +277,7 @@ async function main() {
 
   JWKS:        ${config.issuer}/.well-known/jwks.json
   Login:       ${config.issuer}/auth/login
+  Admin panel: ${config.issuer}/admin
 
   ── Lore Server config snippet ──────────────────────
   [server.auth]
