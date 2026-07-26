@@ -62,7 +62,7 @@ curl http://localhost:8080/health_check
 curl http://localhost:8080/.well-known/jwks.json
 ```
 
-打开 `http://localhost:8080/admin` 可管理用户、登记启用认证前已经存在的仓库，并分配仓库权限。
+打开 `http://localhost:8080/admin` 可管理用户、登记启用认证前已经存在的仓库，并分配仓库权限。管理页面支持亮色与暗色模式切换，主题选择会保存在当前浏览器中。
 
 默认 gRPC 是明文端点，仅用于自动化测试和本地 API 开发。当前 Lore 客户端会把认证端点转换为 HTTPS，因此真实桌面登录必须使用下面的生产 TLS 配置。
 
@@ -122,6 +122,145 @@ endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
 
 此前服务端日志里的 `MissingToken` 表示客户端已经连接到 Lore Server，但还没有携带已保存且已绑定的授权 Token。在浏览器认证尚未完成、认证地址缺失或账号未绑定时，这是预期现象。
 
+## 从无认证 Lore Server 迁移
+
+旧仓库的数据不需要重建或重新上传，但启用 JWT 认证前必须把每个现有仓库登记为认证资源，并给普通用户分配权限。迁移存在一个需要特别注意的引导依赖：
+
+> Lore Server 配置 `auth_url` 后，`lore repository list` 也会先调用认证服务的 `LookupUserPermissions`，因此只能列出已经登记且当前用户有权访问的资源。直接在服务器上执行命令不会绕过认证，也无法发现尚未登记的旧仓库。
+
+### 迁移前准备
+
+- 备份 Lore Server 配置、存储数据，以及 Lore Auth Service 的 `DB_PATH`、`KEY_DIR`。
+- 使用与 Lore Server 协议版本一致的 `lore` CLI。
+- 安排短暂停机窗口。不得让两个 Lore Server 实例同时读写同一存储。
+- 临时关闭认证进行仓库清点时，只允许监听回环地址，或通过防火墙限制为仅本机访问；不得把无认证的 `41337`、`41339` 暴露到局域网或公网。
+- 记录迁移前的仓库名称、Repository ID、用户和预期权限，便于迁移后逐项核对。
+
+### 第一步：清点旧仓库 ID
+
+Repository ID 是 16 字节标识符的 32 位小写十六进制表示。管理后台使用的资源 ID 需要额外添加 `urc-` 前缀。
+
+如果存在任意本地工作副本，可以读取新格式 `.lore/id` 或旧格式 `.urc/id`。该文件是二进制内容，不能直接当文本读取，也不需要再计算哈希：
+
+```bash
+# 根据仓库格式选择其中一个文件。
+id_file=/path/to/repository/.lore/id
+# id_file=/path/to/repository/.urc/id
+
+repository_id="$(od -An -v -tx1 "$id_file" | tr -d ' \n')"
+test "${#repository_id}" -eq 32 || {
+  echo "Invalid Lore Repository ID: expected 16 bytes" >&2
+  exit 1
+}
+printf 'urc-%s\n' "$repository_id"
+```
+
+如果以 Lore Server 的存储清单为准，并且认证还没有启用，可以直接在服务器或具有网络访问权限的同版本 CLI 上执行：
+
+```bash
+lore repository list lore://127.0.0.1:41337
+```
+
+输出格式为：
+
+```text
+repository-name (0194b726b34e72b0b45550b88a967076)
+```
+
+如果 Lore Server 已经配置了认证，则按以下顺序临时枚举完整清单：
+
+1. 停止正式 Lore Server。
+2. 备份配置，并临时移除或注释 `[environment.endpoint]` 中的 `auth_url`。
+3. 保持原存储配置不变，仅在回环地址启动单个 Lore Server 实例。
+4. 执行 `lore repository list lore://127.0.0.1:41337` 并保存完整输出。
+5. 停止临时实例，在恢复正式认证配置前不要再次启动其他实例。
+
+如果服务器容器没有打包 `lore` CLI，可以在宿主机使用相同版本的 CLI 访问临时回环端点，或者临时把 CLI 二进制只读挂载到容器；不要直接修改 Lore 存储数据库。
+
+### 第二步：登记资源并分配权限
+
+1. 启动 Lore Auth Service，确认 `DB_PATH` 和 `KEY_DIR` 位于持久化目录。
+2. 检查 HTTP 健康端点和 JWKS：
+
+   ```bash
+   curl --fail --show-error https://auth.example.com:8080/health_check
+   curl --fail --show-error https://auth.example.com:8080/.well-known/jwks.json
+   ```
+
+3. 登录 `https://auth.example.com:8080/admin`。
+4. 为每个旧仓库登记 `urc-<32位Repository ID>`。仓库名称只用于管理界面显示，不参与 Lore 寻址。
+5. 给每个普通用户分配所需权限：
+   - `read`：浏览、Clone、读取仓库内容。
+   - `write`：Push 和其他仓库写入操作；通常与 `read` 一起授予。
+   - `admin`：仓库级管理操作，只授予需要管理资源的用户。
+
+认证服务管理员对所有**已登记**资源隐式拥有三项权限，但仍无法访问未登记资源。迁移验证应至少使用一个普通用户，避免管理员的隐式权限掩盖漏配。
+
+### 第三步：启用 JWT 验证
+
+确认认证服务的公开值：
+
+```dotenv
+PUBLIC_BASE_URL=https://auth.example.com:8080
+JWT_ISSUER=https://auth.example.com:8080
+JWT_AUDIENCE=lore.example.com
+LORE_ENVIRONMENT=production
+```
+
+然后恢复或加入 Lore Server 配置：
+
+```toml
+[environment.endpoint]
+auth_url = "https://auth.example.com:50051"
+
+[server.auth]
+jwt_issuer = "https://auth.example.com:8080"
+jwt_audience = ["lore.example.com"]
+
+[server.auth.jwk]
+endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
+```
+
+必须满足：
+
+- `JWT_ISSUER` 与 `jwt_issuer` 逐字一致，包括协议、主机名和端口。
+- `JWT_AUDIENCE` 包含客户端实际使用的 Lore Server URL 主机名；如果客户端使用 IP 地址连接，就必须包含该 IP。
+- Lore Server 能访问 Auth gRPC `50051` 和 JWKS HTTPS `8080`。
+- gRPC TLS 证书覆盖 `auth_url` 主机名，反向代理保留 HTTP/2 gRPC 语义。
+- `KEY_DIR` 在重启和重新部署后保持不变；删除它会轮换签名密钥，并使现有 JWT 失效。
+
+### 第四步：重新登录并验收
+
+1. 重启 Lore Server。
+2. 在 Lore Client 或 CLI 中完成一次新的浏览器登录：
+
+   ```bash
+   lore auth login lore://lore.example.com:41337
+   ```
+
+3. 使用普通用户列出仓库：
+
+   ```bash
+   lore repository list lore://lore.example.com:41337
+   ```
+
+4. 确认输出只包含该用户获得权限的仓库，并核对名称和 Repository ID。
+5. 在 Lore Client 中刷新服务器目录，把登录账号应用到目标仓库，再分别验证 Clone、读取和必要的 Push。
+6. 检查 Lore Server 日志，确认登录后不再出现持续的 `MissingToken`、`authorization header required` 或 `Failed to connect to lore auth service`。
+
+常见迁移故障：
+
+| 现象 | 优先检查 |
+|---|---|
+| 登录成功但仓库列表为空 | 资源是否以 `urc-<32位ID>` 登记；普通用户是否至少有 `read` |
+| `Failed to connect to lore auth service` | Lore Server 到 Auth gRPC `50051` 的 DNS、IPv4/IPv6、TLS、SNI 和 HTTP/2 |
+| `MissingToken` / `authorization header required` | 客户端是否完成浏览器登录；账号是否应用到当前服务器或仓库 |
+| JWT issuer 校验失败 | `JWT_ISSUER` 与 `server.auth.jwt_issuer` 是否逐字一致 |
+| JWT audience 校验失败 | `JWT_AUDIENCE` 是否包含 Lore URL 实际使用的主机名或 IP |
+| JWKS 获取失败或未知 `kid` | Lore Server 是否能访问 `/.well-known/jwks.json`；`KEY_DIR` 是否被意外更换 |
+
+若必须回滚，停止 Lore Server，恢复迁移前的无认证配置后再启动。认证服务中新增的资源和权限不会修改 Lore 仓库数据，可以保留供下一次迁移继续使用。
+
 ## Docker
 
 仓库中的 compose 默认启动本地开发实例：
@@ -157,13 +296,15 @@ services:
 
 ## 管理与仓库权限
 
-管理后台位于 `/admin`。Access Token 与 Refresh Token 只保存在当前标签页的 `sessionStorage` 中，关闭标签页或退出登录后会被清除。
+管理后台位于 `/admin`。页面提供亮色与暗色模式，并在首次访问时跟随系统主题；用户手动切换后会通过 `localStorage` 记住选择。Access Token 与 Refresh Token 只保存在当前标签页的 `sessionStorage` 中，关闭标签页或退出登录后会被清除。
 
 通过 Lore ReBAC 创建的新仓库会自动登记，创建者取得 `read`、`write` 和 `admin`。对启用认证前已经存在的仓库：
 
 1. 找到 32 位十六进制 Lore Repository ID。
 2. 在管理后台登记 `urc-<repository-id>`。
 3. 为每个用户分配所需权限。
+
+完整的停机清点、JWT 配置、权限迁移和验收步骤见“从无认证 Lore Server 迁移”。
 
 管理员隐式拥有所有已登记仓库的权限；普通用户只能看到并交换显式授权仓库的 Token。
 

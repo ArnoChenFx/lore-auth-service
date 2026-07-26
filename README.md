@@ -122,6 +122,145 @@ Refresh the remote repository dialog after the server restarts. When no valid ac
 
 The previous `MissingToken` server log means the client reached Lore Server without a stored/bound authorization token. It is expected before the browser flow completes or when the auth URL/account binding is missing.
 
+## Migrating an unauthenticated Lore Server
+
+Existing repository data does not need to be rebuilt or uploaded again. Before JWT authentication is enabled, however, every existing repository must be registered as an auth resource and ordinary users must receive explicit permissions. The migration has an important bootstrap dependency:
+
+> After Lore Server is configured with `auth_url`, `lore repository list` also calls the auth service's `LookupUserPermissions` first. It can therefore return only resources that are already registered and visible to the current user. Running the command on the server does not bypass authentication and cannot discover an unregistered legacy repository.
+
+### Preparation
+
+- Back up the Lore Server configuration and storage, plus Lore Auth Service's `DB_PATH` and `KEY_DIR`.
+- Use a `lore` CLI build that matches the Lore Server protocol version.
+- Schedule a short maintenance window. Never run two Lore Server processes against the same storage.
+- While authentication is temporarily disabled for discovery, bind only to loopback or restrict access to the local machine with a firewall. Never expose unauthenticated ports `41337` or `41339` to a LAN or the Internet.
+- Record the repository names, Repository IDs, users, and intended permissions before the change so that they can be checked after migration.
+
+### Step 1: Inventory legacy Repository IDs
+
+A Repository ID is the 32-lowercase-hex representation of a 16-byte identifier. The administration panel uses the same value with an additional `urc-` prefix.
+
+If any local working copy exists, read `.lore/id` for the current format or `.urc/id` for the legacy format. The file is binary; do not read it as text or hash it again:
+
+```bash
+# Select the file that matches the repository format.
+id_file=/path/to/repository/.lore/id
+# id_file=/path/to/repository/.urc/id
+
+repository_id="$(od -An -v -tx1 "$id_file" | tr -d ' \n')"
+test "${#repository_id}" -eq 32 || {
+  echo "Invalid Lore Repository ID: expected 16 bytes" >&2
+  exit 1
+}
+printf 'urc-%s\n' "$repository_id"
+```
+
+To use the Lore Server's authoritative storage inventory before authentication has been enabled, run this on the server or from a matching CLI with network access:
+
+```bash
+lore repository list lore://127.0.0.1:41337
+```
+
+The output format is:
+
+```text
+repository-name (0194b726b34e72b0b45550b88a967076)
+```
+
+If Lore Server already has authentication configured, enumerate the complete inventory in this order:
+
+1. Stop the production Lore Server.
+2. Back up the configuration and temporarily remove or comment out `auth_url` under `[environment.endpoint]`.
+3. Keep the original storage configuration and start exactly one Lore Server instance bound only to loopback.
+4. Run `lore repository list lore://127.0.0.1:41337` and save the complete output.
+5. Stop the temporary instance. Do not start any other instance before restoring the production authentication configuration.
+
+If the server container does not include the `lore` CLI, use a matching CLI on the host to access the temporary loopback endpoint, or mount the CLI binary read-only into the container. Do not edit the Lore storage database directly.
+
+### Step 2: Register resources and assign permissions
+
+1. Start Lore Auth Service and confirm that `DB_PATH` and `KEY_DIR` use persistent storage.
+2. Check the HTTP health endpoint and JWKS:
+
+   ```bash
+   curl --fail --show-error https://auth.example.com:8080/health_check
+   curl --fail --show-error https://auth.example.com:8080/.well-known/jwks.json
+   ```
+
+3. Sign in to `https://auth.example.com:8080/admin`.
+4. Register `urc-<32-hex-character Repository ID>` for each legacy repository. The repository name is display-only and does not participate in Lore addressing.
+5. Assign each ordinary user the required permissions:
+   - `read`: browse, clone, and read repository content.
+   - `write`: push and other repository writes; normally grant it together with `read`.
+   - `admin`: repository-level administration; grant it only to users who manage the resource.
+
+Auth service administrators implicitly receive all three permissions for every **registered** resource, but they still cannot access an unregistered resource. Validate the migration with at least one ordinary user so that administrator privileges do not hide missing assignments.
+
+### Step 3: Enable JWT verification
+
+Confirm the auth service's public values:
+
+```dotenv
+PUBLIC_BASE_URL=https://auth.example.com:8080
+JWT_ISSUER=https://auth.example.com:8080
+JWT_AUDIENCE=lore.example.com
+LORE_ENVIRONMENT=production
+```
+
+Then restore or add the Lore Server configuration:
+
+```toml
+[environment.endpoint]
+auth_url = "https://auth.example.com:50051"
+
+[server.auth]
+jwt_issuer = "https://auth.example.com:8080"
+jwt_audience = ["lore.example.com"]
+
+[server.auth.jwk]
+endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
+```
+
+The following invariants must hold:
+
+- `JWT_ISSUER` and `jwt_issuer` must match byte-for-byte, including scheme, hostname, and port.
+- `JWT_AUDIENCE` must contain the hostname actually used in the Lore Server URL. If clients connect by IP address, include that IP address.
+- Lore Server must be able to reach Auth gRPC on `50051` and JWKS HTTPS on `8080`.
+- The gRPC TLS certificate must cover the `auth_url` hostname, and a reverse proxy must preserve HTTP/2 gRPC semantics.
+- `KEY_DIR` must remain stable across restarts and deployments. Removing it rotates the signing key and invalidates issued JWTs.
+
+### Step 4: Sign in again and validate
+
+1. Restart Lore Server.
+2. Complete a fresh browser login from Lore Client or the CLI:
+
+   ```bash
+   lore auth login lore://lore.example.com:41337
+   ```
+
+3. List repositories as an ordinary user:
+
+   ```bash
+   lore repository list lore://lore.example.com:41337
+   ```
+
+4. Confirm that the output contains only repositories granted to that user, with the expected names and Repository IDs.
+5. Refresh the server directory in Lore Client, apply the signed-in account to the target repositories, then verify clone, read, and any required push operations.
+6. Inspect Lore Server logs and confirm that persistent `MissingToken`, `authorization header required`, or `Failed to connect to lore auth service` errors no longer appear after login.
+
+Common migration failures:
+
+| Symptom | Check first |
+|---|---|
+| Login succeeds but the repository list is empty | The resource is registered as `urc-<32-hex-ID>` and the ordinary user has at least `read` |
+| `Failed to connect to lore auth service` | DNS, IPv4/IPv6, TLS, SNI, and HTTP/2 from Lore Server to Auth gRPC `50051` |
+| `MissingToken` / `authorization header required` | Browser login completed and the account is applied to the current server or repository |
+| JWT issuer validation fails | `JWT_ISSUER` exactly matches `server.auth.jwt_issuer` |
+| JWT audience validation fails | `JWT_AUDIENCE` contains the hostname or IP actually used by the Lore URL |
+| JWKS fetch fails or `kid` is unknown | Lore Server can access `/.well-known/jwks.json` and `KEY_DIR` was not replaced |
+
+To roll back, stop Lore Server, restore the previous unauthenticated configuration, and start it again. Resources and permissions added to the auth service do not modify Lore repository data and may remain in place for the next migration attempt.
+
 ## Docker
 
 The checked-in compose file starts a local development instance:
@@ -164,6 +303,8 @@ New repositories created through Lore ReBAC are registered automatically and the
 1. Find the 32-hex-character Lore Repository ID.
 2. Register `urc-<repository-id>` in the administration panel.
 3. Assign the required permissions to each user.
+
+See “Migrating an unauthenticated Lore Server” for the complete downtime inventory, JWT configuration, permission migration, and validation procedure.
 
 Administrators have implicit access to all registered repositories. Ordinary users only see and exchange tokens for explicitly assigned repositories.
 
