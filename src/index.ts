@@ -4,7 +4,8 @@
  * HTTP service based on Bun.serve, providing:
  *   GET  /.well-known/jwks.json     — JWKS endpoint (fetched by Lore Server)
  *   GET  /health_check              — Health check
- *   POST /auth/login                — User login, returns JWT
+ *   POST /auth/login                — User login, returns access + refresh tokens
+ *   POST /auth/refresh              — Use refresh token to get a new access token
  *   GET  /auth/me                   — Verify token, return current user info
  *   GET  /admin                    — Admin panel (HTML UI)
  *   POST /admin/users               — Create a user (requires admin token)
@@ -19,11 +20,16 @@ import {
   createUser,
   authenticate,
   getUserByUsername,
+  getUserById,
   listUsers,
   deleteUser,
   userCount,
+  hashRefreshToken,
+  createRefreshToken,
+  getRefreshTokenByHash,
+  revokeRefreshToken,
 } from "./db";
-import { issueToken, verifyToken, extractBearerToken, type TokenPayload } from "./jwt";
+import { issueToken, verifyToken, generateRefreshToken, extractBearerToken, type TokenPayload } from "./jwt";
 import { handleAdminPanel } from "./admin-panel";
 
 // ─── Types ──────────────────────────────────────────
@@ -76,20 +82,63 @@ async function handleLogin(ctx: RequestContext, req: Request): Promise<Response>
     return errorResponse("Invalid username or password", 401);
   }
 
-  const token = await issueToken(ctx.keys, ctx.config, String(user.id), {
+  const accessToken = await issueToken(ctx.keys, ctx.config, String(user.id), {
     username: user.username,
     is_admin: user.is_admin === 1,
   });
 
+  const refreshToken = generateRefreshToken();
+  const refreshTokenHash = hashRefreshToken(refreshToken);
+  createRefreshToken(ctx.config.dbPath, user.id, refreshTokenHash, ctx.config.refreshTokenTtl);
+
   return json({
-    token,
+    token: accessToken,
+    refresh_token: refreshToken,
     token_type: "Bearer",
     expires_in: ctx.config.tokenTtl,
+    refresh_expires_in: ctx.config.refreshTokenTtl,
     user: {
       id: user.id,
       username: user.username,
       is_admin: user.is_admin === 1,
     },
+  });
+}
+
+async function handleRefreshToken(ctx: RequestContext, req: Request): Promise<Response> {
+  const body = await parseBody(req);
+  if (!body || !body.refresh_token || typeof body.refresh_token !== "string") {
+    return errorResponse("Missing refresh_token", 400);
+  }
+
+  const tokenHash = hashRefreshToken(body.refresh_token);
+  const stored = getRefreshTokenByHash(ctx.config.dbPath, tokenHash);
+  if (!stored || stored.revoked_at || new Date(stored.expires_at) < new Date()) {
+    return errorResponse("Invalid or expired refresh token", 401);
+  }
+
+  const user = getUserById(ctx.config.dbPath, stored.user_id);
+  // user_id references users(id); guard against a deleted user just in case.
+  if (!user) return errorResponse("User not found", 401);
+
+  // Rotate the refresh token: revoke the old one and issue a new one.
+  revokeRefreshToken(ctx.config.dbPath, tokenHash);
+
+  const accessToken = await issueToken(ctx.keys, ctx.config, String(user.id), {
+    username: user.username,
+    is_admin: user.is_admin === 1,
+  });
+
+  const newRefreshToken = generateRefreshToken();
+  const newRefreshTokenHash = hashRefreshToken(newRefreshToken);
+  createRefreshToken(ctx.config.dbPath, user.id, newRefreshTokenHash, ctx.config.refreshTokenTtl);
+
+  return json({
+    token: accessToken,
+    refresh_token: newRefreshToken,
+    token_type: "Bearer",
+    expires_in: ctx.config.tokenTtl,
+    refresh_expires_in: ctx.config.refreshTokenTtl,
   });
 }
 
@@ -233,6 +282,9 @@ async function main() {
         }
         if (path === "/auth/login" && method === "POST") {
           return handleLogin(ctx, req);
+        }
+        if (path === "/auth/refresh" && method === "POST") {
+          return handleRefreshToken(ctx, req);
         }
         if (path === "/auth/me" && method === "GET") {
           return handleMe(ctx, req);

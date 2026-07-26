@@ -10,6 +10,7 @@
  */
 
 import { SignJWT, jwtVerify, errors as joseErrors } from "jose";
+import { randomBytes } from "crypto";
 import type { KeyMaterial } from "./keys";
 import type { AppConfig } from "./config";
 
@@ -74,6 +75,14 @@ export async function verifyToken(
     // Don't expose unknown errors to the client either
     return null;
   }
+}
+
+/**
+ * Generate a cryptographically secure opaque refresh token.
+ * Returns a 64-byte hex string (256 bits of entropy).
+ */
+export function generateRefreshToken(): string {
+  return randomBytes(32).toString("hex");
 }
 
 /**

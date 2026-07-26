@@ -2,7 +2,8 @@
  * admin-panel.ts — A simple browser-based admin panel
  *
  * Served at GET /admin. It uses the existing admin API endpoints:
- *   POST /auth/login        — admin login
+ *   POST /auth/login        — admin login (returns access + refresh tokens)
+ *   POST /auth/refresh      — refresh access token
  *   GET  /admin/users       — list users
  *   POST /admin/users       — create user
  *   DEL  /admin/users/:name — delete user
@@ -178,7 +179,10 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
 
   <script>
     const tokenKey = 'lore_auth_admin_token';
+    const refreshKey = 'lore_auth_admin_refresh';
     const usernameKey = 'lore_auth_admin_user';
+    let isRefreshing = false;
+    let refreshPromise = null;
 
     let currentUsername = localStorage.getItem(usernameKey) || '';
 
@@ -190,15 +194,59 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       setTimeout(() => el.classList.add('hidden'), 4000);
     }
 
-    async function request(url, options = {}) {
+    function getAccessToken() {
+      return localStorage.getItem(tokenKey);
+    }
+
+    function setTokens(accessToken, refreshToken) {
+      if (accessToken) localStorage.setItem(tokenKey, accessToken);
+      if (refreshToken) localStorage.setItem(refreshKey, refreshToken);
+    }
+
+    async function refreshAccessToken() {
+      if (isRefreshing) return refreshPromise;
+      isRefreshing = true;
+      refreshPromise = (async function() {
+        const refreshToken = localStorage.getItem(refreshKey);
+        if (!refreshToken) throw new Error('No refresh token');
+        const res = await fetch('/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Refresh failed');
+        setTokens(data.token, data.refresh_token);
+        return data.token;
+      })();
+      try {
+        return await refreshPromise;
+      } finally {
+        isRefreshing = false;
+        refreshPromise = null;
+      }
+    }
+
+    async function request(url, options = {}, retry = true) {
       const res = await fetch(url, {
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + localStorage.getItem(tokenKey)
+          'Authorization': 'Bearer ' + getAccessToken()
         },
         ...options
       });
       const data = await res.json().catch(() => ({}));
+
+      if (res.status === 401 && retry && localStorage.getItem(refreshKey)) {
+        try {
+          const newToken = await refreshAccessToken();
+          return request(url, options, false);
+        } catch (refreshErr) {
+          logout();
+          throw new Error('Session expired. Please sign in again.');
+        }
+      }
+
       if (!res.ok) throw new Error(data.error || 'Request failed');
       return data;
     }
@@ -217,7 +265,7 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Login failed');
 
-        localStorage.setItem(tokenKey, data.token);
+        setTokens(data.token, data.refresh_token);
         localStorage.setItem(usernameKey, data.user.username);
         currentUsername = data.user.username;
         enterDashboard();
@@ -228,6 +276,7 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
 
     function logout() {
       localStorage.removeItem(tokenKey);
+      localStorage.removeItem(refreshKey);
       localStorage.removeItem(usernameKey);
       currentUsername = '';
       document.getElementById('loginCard').classList.remove('hidden');

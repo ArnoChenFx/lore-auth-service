@@ -237,8 +237,9 @@ LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
 |--------|------|------|-------------|
 | GET | `/.well-known/jwks.json` | none | JWKS endpoint for Lore Server signature verification |
 | GET | `/health_check` | none | Health check |
-| POST | `/auth/login` | none | Username/password login, returns JWT |
-| GET | `/auth/me` | Bearer | Verify current token, return user info |
+| POST | `/auth/login` | none | Username/password login, returns access + refresh tokens |
+| POST | `/auth/refresh` | none | Exchange a refresh token for a new access token |
+| GET | `/auth/me` | Bearer | Verify current token, return current user info |
 | GET | `/admin` | none | Browser-based admin panel for managing users |
 | POST | `/admin/users` | Bearer (admin) | Create a user |
 | GET | `/admin/users` | Bearer (admin) | List all users |
@@ -246,7 +247,23 @@ LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
 
 ### Admin Panel
 
-Open `http://localhost:8080/admin` in a browser and log in with an admin account. From the panel you can list, create, and delete users without using `curl`.
+Open `http://localhost:8080/admin` in a browser and log in with an admin account. From the panel you can list, create, and delete users without using `curl`. The panel automatically refreshes expired access tokens in the background.
+
+### Refresh Tokens
+
+`/auth/login` returns both an `access_token` (short-lived, default 1 hour) and a `refresh_token` (long-lived, default 7 days). When the access token expires, call `POST /auth/refresh` with the refresh token to get a new access token and a new refresh token. The old refresh token is rotated (revoked) after use.
+
+```bash
+# Login
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"changeme"}'
+
+# Refresh when the access token expires
+curl -X POST http://localhost:8080/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"<refresh-token>"}'
+```
 
 ## Configuration
 
@@ -255,7 +272,8 @@ Open `http://localhost:8080/admin` in a browser and log in with an admin account
 | `PORT` | `8080` | HTTP listen port |
 | `JWT_ISSUER` | `http://localhost:8080` | JWT issuer — must match the Lore Server's `jwt_issuer` |
 | `JWT_AUDIENCE` | `lore-service` | JWT audience — must be included in the Lore Server's `jwt_audience` list |
-| `TOKEN_TTL` | `3600` | Token lifetime in seconds |
+| `TOKEN_TTL` | `43200` | Access token lifetime in seconds |
+| `REFRESH_TOKEN_TTL` | `604800` | Refresh token lifetime in seconds (default 7 days) |
 | `KEY_DIR` | `./keys` | RSA key pair storage directory |
 | `DB_PATH` | `./lore-auth.db` | SQLite database path |
 | `ADMIN_USERNAME` | `admin` | Admin username created on first launch |

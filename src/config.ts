@@ -7,6 +7,7 @@ export interface AppConfig {
   issuer: string;
   audience: string;
   tokenTtl: number;
+  refreshTokenTtl: number;
   keyDir: string;
   dbPath: string;
   adminUsername: string;
@@ -30,7 +31,8 @@ export function loadConfig(): AppConfig {
     port: envInt("PORT", 8080),
     issuer: env("JWT_ISSUER", "http://localhost:8080"),
     audience: env("JWT_AUDIENCE", "lore-service"),
-    tokenTtl: envInt("TOKEN_TTL", 3600),
+    tokenTtl: envInt("TOKEN_TTL", 43200),
+    refreshTokenTtl: envInt("REFRESH_TOKEN_TTL", 7 * 24 * 60 * 60),
     keyDir: env("KEY_DIR", "./keys"),
     dbPath: env("DB_PATH", "./lore-auth.db"),
     adminUsername: env("ADMIN_USERNAME", "admin"),

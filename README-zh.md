@@ -237,7 +237,8 @@ LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
 |------|------|------|------|
 | GET | `/.well-known/jwks.json` | 无 | JWKS 端点，供 Lore Server 验签用 |
 | GET | `/health_check` | 无 | 健康检查 |
-| POST | `/auth/login` | 无 | 用户名密码登录，返回 JWT |
+| POST | `/auth/login` | 无 | 用户名密码登录，返回 access + refresh token |
+| POST | `/auth/refresh` | 无 | 用 refresh token 换取新的 access token |
 | GET | `/auth/me` | Bearer | 验证当前 token，返回用户信息 |
 | GET | `/admin` | 无 | 浏览器端管理员面板，管理用户 |
 | POST | `/admin/users` | Bearer (admin) | 创建用户 |
@@ -246,7 +247,23 @@ LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
 
 ### 管理员面板
 
-在浏览器打开 `http://localhost:8080/admin`，使用 admin 账号登录后即可在页面上列出、创建和删除用户，无需使用 `curl`。
+在浏览器打开 `http://localhost:8080/admin`，使用 admin 账号登录后即可在页面上列出、创建和删除用户，无需使用 `curl`。页面会自动在后台刷新过期的 access token。
+
+### Refresh Token
+
+`/auth/login` 会同时返回 `access_token`（默认 1 小时有效）和 `refresh_token`（默认 7 天有效）。access token 过期后，调用 `POST /auth/refresh` 并带上 refresh token 即可换取新的 access token 和新的 refresh token。旧的 refresh token 在用一次后会被吊销（rotation）。
+
+```bash
+# 登录
+curl -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"changeme"}'
+
+# access token 过期后刷新
+curl -X POST http://localhost:8080/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"<refresh-token>"}'
+```
 
 ## 配置参数
 
@@ -255,7 +272,8 @@ LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
 | `PORT` | `8080` | HTTP 监听端口 |
 | `JWT_ISSUER` | `http://localhost:8080` | JWT 签发者，必须与 Lore Server 的 `jwt_issuer` 一致 |
 | `JWT_AUDIENCE` | `lore-service` | JWT 受众，必须包含在 Lore Server 的 `jwt_audience` 列表里 |
-| `TOKEN_TTL` | `3600` | Token 有效期（秒） |
+| `TOKEN_TTL` | `43200` | Access token 有效期（秒） |
+| `REFRESH_TOKEN_TTL` | `604800` | Refresh token 有效期（秒，默认 7 天） |
 | `KEY_DIR` | `./keys` | RSA 密钥对存储目录 |
 | `DB_PATH` | `./lore-auth.db` | SQLite 数据库路径 |
 | `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员用户名 |
