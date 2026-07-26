@@ -1,0 +1,7 @@
+node_modules/
+keys/
+*.db
+.env
+dist/
+.git/
+.gitignore

@@ -1,0 +1,93 @@
+# ── Lore Auth Service Docker image publish workflow ──
+# Trigger: a semantic version tag vX.X.X is pushed (e.g. v1.0.0)
+# Behavior: build the Docker image and push it to GitHub Container Registry (ghcr.io)
+
+name: Docker Publish
+
+on:
+  push:
+    # Only trigger on semantic version tags
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+env:
+  # Full image name; GitHub Container Registry requires lowercase owner/repo
+  IMAGE_NAME: ghcr.io/arnochenfx/lore-auth-service
+
+jobs:
+  build-and-push:
+    name: Build and push Docker image
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Read repository contents to check out the code
+      contents: read
+      # Write to GitHub Container Registry
+      packages: write
+      # For OIDC tokens if passwordless login is needed later
+      id-token: write
+
+    steps:
+      # 1. Check out the repository with full history for branch checks
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      # 2. Verify that the tag was created from the main branch
+      #    Git tags are not bound to a branch, so we use merge-base to verify
+      - name: Verify tag is on main branch
+        run: |
+          git fetch origin main --depth=1
+          if ! git merge-base --is-ancestor ${{ github.ref_name }} origin/main; then
+            echo "Tag ${{ github.ref_name }} is not on the main branch, aborting build."
+            exit 1
+          fi
+          echo "Tag ${{ github.ref_name }} verified to be on the main branch."
+
+      # 3. Set up QEMU for cross-platform builds
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 4. Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 5. Log in to GitHub Container Registry
+      #    GITHUB_TOKEN is automatically injected by GitHub Actions
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 6. Extract image metadata and tag list
+      #    - latest
+      #    - v1.0.0
+      #    - v1.0
+      #    - v1
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      # 7. Build and push the image with GitHub Actions cache
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,45 @@
+# ── Lore Auth Service Docker Compose ──
+# Usage:
+#   docker-compose up -d          Start the service.
+#   docker-compose logs -f        View logs.
+#   docker-compose down           Stop and remove containers.
+
+services:
+  lore-auth:
+    # Build method: build directly using the Dockerfile in the current directory.
+    # To use a pre-built image automatically published by CI on GitHub Container Registry,
+    # comment out the build block below and uncomment one of the image lines (choose one):
+    # image: ghcr.io/arnochenfx/lore-auth-service:latest
+    # image: ghcr.io/arnochenfx/lore-auth-service:v1.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lore-auth
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # JWT configuration — must match jwt_issuer / jwt_audience in Lore Server's local.toml.
+      # If Lore Server is on another machine, change JWT_ISSUER to an externally reachable address.
+      JWT_ISSUER: "http://localhost:8080"
+      JWT_AUDIENCE: "lore-service"
+      TOKEN_TTL: "3600"
+
+      # Administrator account created on first startup.
+      ADMIN_USERNAME: "admin"
+      ADMIN_PASSWORD: "changeme"
+    volumes:
+      # RSA key pair persistence. Deleting it regenerates the keys and invalidates all issued tokens.
+      - lore-auth-keys:/app/keys
+      # SQLite database persistence.
+      - lore-auth-data:/app/data
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:8080/health_check').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  lore-auth-keys:
+  lore-auth-data:
