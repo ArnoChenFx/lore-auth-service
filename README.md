@@ -2,7 +2,7 @@
 
 Lore Auth Service is a TypeScript/Bun implementation of Lore's native browser authentication and repository authorization protocols. It exposes the `ucs.auth.UrcAuthApi` and `ucs.auth.RebacApi` gRPC services, issues Lore-compatible RS256 JWTs, publishes JWKS, and provides a small browser administration panel.
 
-[中文文档](README-zh.md) · [Integration guide](AUTH_INTEGRATION.md)
+[Chinese documentation](README-zh.md)
 
 ## What is implemented
 

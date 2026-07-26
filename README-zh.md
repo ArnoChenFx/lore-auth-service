@@ -2,7 +2,7 @@
 
 Lore Auth Service 是基于 TypeScript 与 Bun 实现的 Lore 原生浏览器认证及仓库授权服务。它提供 `ucs.auth.UrcAuthApi`、`ucs.auth.RebacApi` gRPC 服务，签发 Lore 兼容的 RS256 JWT，发布 JWKS，并附带轻量浏览器管理后台。
 
-[English](README.md) · [集成交付说明](AUTH_INTEGRATION.md)
+[English](README.md)
 
 ## 已实现能力
 
