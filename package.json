@@ -1,6 +1,6 @@
 {
   "name": "lore-auth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "JWT authentication service for Epic Games Lore VCS — exposes JWKS + issues tokens",
   "type": "module",
   "scripts": {

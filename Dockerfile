@@ -2,7 +2,7 @@
 # Based on the official oven/bun image, using a multi-stage build to reduce the final image size.
 
 # ── Stage 1: Install dependencies ──
-FROM oven/bun:1.1-alpine AS deps
+FROM oven/bun:1.3-alpine AS deps
 WORKDIR /app
 
 # Copy dependency manifests first to leverage Docker layer caching.
@@ -10,7 +10,7 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 # ── Stage 2: Runtime ──
-FROM oven/bun:1.1-alpine AS runtime
+FROM oven/bun:1.3-alpine AS runtime
 
 # Run as a non-root user.
 RUN addgroup --system --gid 1001 lore \
