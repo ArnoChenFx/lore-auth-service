@@ -1,14 +1,18 @@
 {
   "name": "lore-auth",
   "version": "0.1.1",
-  "description": "JWT authentication service for Epic Games Lore VCS — exposes JWKS + issues tokens",
+  "description": "Native browser authentication, JWT authorization, JWKS, and ReBAC service for Lore VCS",
   "type": "module",
   "scripts": {
     "dev": "bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "bootstrap": "bun run src/index.ts --bootstrap"
+    "bootstrap": "bun run src/index.ts --bootstrap",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {
+    "@grpc/grpc-js": "1.14.4",
+    "@grpc/proto-loader": "0.8.0",
     "jose": "^5.10.0"
   },
   "devDependencies": {

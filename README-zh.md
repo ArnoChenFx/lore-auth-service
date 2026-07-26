@@ -1,320 +1,248 @@
 # Lore Auth Service
 
-基于 TypeScript + Bun.js 的 JWT 认证服务，为 Epic Games [Lore VCS](https://github.com/EpicGames/lore) 提供 JWT 签发与 JWKS 端点。
+Lore Auth Service 是基于 TypeScript 与 Bun 实现的 Lore 原生浏览器认证及仓库授权服务。它提供 `ucs.auth.UrcAuthApi`、`ucs.auth.RebacApi` gRPC 服务，签发 Lore 兼容的 RS256 JWT，发布 JWKS，并附带轻量浏览器管理后台。
 
-[English](README.md)
+[English](README.md) · [集成交付说明](AUTH_INTEGRATION.md)
 
-## 工作原理
+## 已实现能力
+
+- Lore 原生浏览器登录：创建会话、打开登录页、轮询并取得 AuthN Token
+- 含 Lore 必需 Claims 的 AuthN JWT 与仓库范围 AuthZ JWT
+- 通过 `LookupUserPermissions` 浏览有权访问的仓库
+- 通过 Lore ReBAC 创建和删除仓库资源
+- 按用户配置仓库 `read`、`write`、`admin` 权限
+- 使用 scrypt 哈希密码的本地账号
+- 供 Lore Server 验签的 JWKS
+- 面向管理后台和 API 客户端的 REST Access/Refresh Token
+- 使用 SQLite 持久化用户、Refresh Token 哈希、浏览器会话哈希、资源和权限
+
+## 认证流程
 
 ```mermaid
-flowchart LR
-    C["Client\n(CLI)"]
-    A["Lore Auth\n(this svc)\nport :8080"]
-    S["Lore Server\nport :41337"]
-    J["Lore Auth\n/.well-known/jwks.json"]
+sequenceDiagram
+    participant C as Lore Client
+    participant A as Lore Auth gRPC :50051
+    participant B as 系统浏览器
+    participant H as Lore Auth HTTPS :8080
+    participant S as Lore Server
 
-    C -->|"1. login (用户名/密码)"| A
-    A -->|"2. JWT (RSA 签名)"| C
-    C -->|"3. push/clone (Bearer JWT)"| S
-    S -->|"4. JWKS 拉取\n(启动时 / 未知 kid)\n通过 JWKS 验证 JWT"| J
+    C->>A: StartAuthSession(client_state)
+    A-->>C: session_code + login_url
+    C->>B: 打开 login_url
+    B->>H: 提交用户名和密码
+    H-->>B: 会话批准成功
+    loop 每 5 秒
+      C->>A: GetAuthSession(client_state, session_code)
+    end
+    A-->>C: AuthN JWT
+    C->>A: 查询权限 / 交换仓库资源
+    A-->>C: 仓库范围 AuthZ JWT
+    C->>S: 携带 Bearer AuthZ JWT 的 Lore 请求
+    S->>H: 按需读取 JWKS
 ```
 
-1. 客户端用用户名密码登录 Lore Auth，拿到 JWT
-2. 客户端拿 JWT 作为 Bearer token 去 push/clone Lore Server
-3. Lore Server 启动时从 Lore Auth 的 JWKS 端点拉取公钥，验证 JWT 签名
-4. Lore Server 从已验证的 session 派生 partition（仓库隔离边界），客户端无法越权
+用户名和密码只会提交到认证服务的浏览器页面，不进入 Lore Client。JWT 不会写入浏览器 URL 或页面内容。
 
-## 快速开始
+## 本地开发快速开始
 
-### 前置条件
-
-- Bun >= 1.3 (https://bun.sh)
-
-### 安装依赖
+前置条件：Bun 1.3 或更高版本。
 
 ```bash
-cd lore-auth
 bun install
-```
-
-### 首次启动（自动 bootstrap 管理员）
-
-```bash
-# 方式一: bootstrap 命令
-bun run bootstrap
-
-# 方式二: 首次启动自动检测空库 -> 创建 admin
-bun run start
-```
-
-默认管理员 `admin / changeme`，可通过环境变量或 `.env` 文件自定义：
-
-```bash
 cp .env.example .env
-# 编辑 .env...
-```
-
-### 日常启动
-
-```bash
 bun run start
-# 或开发模式 (热重载)
-bun run dev
 ```
 
-### 验证
+第一次启动时，空数据库会创建配置中的管理员。开发默认账号为 `admin / changeme`；服务对外开放前必须修改 `ADMIN_PASSWORD`。
+
+常用端点：
 
 ```bash
-# 1. 健康检查
 curl http://localhost:8080/health_check
-
-# 2. JWKS 端点 (Lore Server 会拉这个)
 curl http://localhost:8080/.well-known/jwks.json
-
-# 3. 登录拿 token
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"changeme"}'
-
-# 4. 验证 token
-curl http://localhost:8080/auth/me \
-  -H "Authorization: Bearer <token>"
-
-# 5. 创建新用户 (需要 admin token)
-curl -X POST http://localhost:8080/admin/users \
-  -H "Authorization: Bearer <admin-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"username":"alice","password":"alice123","is_admin":false}'
-
-# 6. 列出用户
-curl http://localhost:8080/admin/users \
-  -H "Authorization: Bearer <admin-token>"
-
-# 7. 删除用户
-curl -X DELETE http://localhost:8080/admin/users/alice \
-  -H "Authorization: Bearer <admin-token>"
 ```
 
-### 便捷签发测试 token
+打开 `http://localhost:8080/admin` 可管理用户、登记启用认证前已经存在的仓库，并分配仓库权限。
+
+默认 gRPC 是明文端点，仅用于自动化测试和本地 API 开发。当前 Lore 客户端会把认证端点转换为 HTTPS，因此真实桌面登录必须使用下面的生产 TLS 配置。
+
+## 生产环境配置
+
+准备 `auth.example.com` 一类 DNS 名称，以及 Lore Client 和 Lore Server 所在机器都信任的证书。服务可在 HTTP 与 gRPC 端口复用同一张证书。
+
+环境变量示例：
+
+```dotenv
+HOST=0.0.0.0
+PORT=8080
+GRPC_HOST=0.0.0.0
+GRPC_PORT=50051
+
+PUBLIC_BASE_URL=https://auth.example.com:8080
+JWT_ISSUER=https://auth.example.com:8080
+JWT_AUDIENCE=lore.example.com
+LORE_ENVIRONMENT=production
+
+TLS_CERT_FILE=/run/secrets/lore-auth/fullchain.pem
+TLS_KEY_FILE=/run/secrets/lore-auth/privkey.pem
+
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=替换为足够长的随机密码
+```
+
+关键点：
+
+- `PUBLIC_BASE_URL` 是返回给浏览器的 `login_url` 所使用的 HTTPS Origin。
+- Lore 认证端点是 `https://auth.example.com:50051`。
+- `JWT_ISSUER` 必须与 Lore Server 的 `server.auth.jwt_issuer` 完全一致。
+- `JWT_AUDIENCE` 是逗号分隔列表，必须包含 Lore Server 远端 URL 使用的真实主机名，例如 `lore.example.com`；不能再使用 `lore-service` 这类抽象名称。
+- 证书必须覆盖认证端点主机名。如果使用内部 CA，需要把 CA 安装到每台 Lore Client 和 Lore Server 机器的信任库。
+
+### Lore Server 配置
+
+在 Lore Server 覆盖 TOML 中加入：
+
+```toml
+[environment.endpoint]
+auth_url = "https://auth.example.com:50051"
+
+[server.auth]
+jwt_issuer = "https://auth.example.com:8080"
+jwt_audience = ["lore.example.com"]
+
+[server.auth.jwk]
+endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
+```
+
+修改后重启 Lore Server。服务端会向客户端发布 `environment.endpoint.auth_url`，校验 JWT 的签发者和受众，并从 JWKS 获取签名公钥。
+
+### Lore Client
+
+服务端重启后，在远端仓库弹窗点击刷新。若没有有效且已绑定的账号，Lore Client 应自动打开浏览器认证页。完成登录后返回客户端，再在账号管理器中把该账号绑定到相应仓库。
+
+此前服务端日志里的 `MissingToken` 表示客户端已经连接到 Lore Server，但还没有携带已保存且已绑定的授权 Token。在浏览器认证尚未完成、认证地址缺失或账号未绑定时，这是预期现象。
+
+## Docker
+
+仓库中的 compose 默认启动本地开发实例：
 
 ```bash
-# 直接输出一个 JWT 到 stdout，适合管道传给其他工具
-bun run src/index.ts --token-for=admin
+docker compose up -d --build
+docker compose logs -f lore-auth
 ```
 
-## Docker 部署
+它会暴露 HTTP `8080` 与 gRPC `50051`，并持久化 `/app/keys` 和 `/app/data`。
 
-### 使用 docker-compose（推荐）
-
-```bash
-# 构建并后台启动
-docker-compose up -d
-
-# 查看日志
-docker-compose logs -f
-
-# 停止并移除容器
-docker-compose down
-```
-
-#### 使用 GitHub Container Registry 预构建镜像
-
-默认 `docker-compose.yml` 会在本地构建镜像。你也可以切换到 GitHub Actions 自动发布到 ghcr.io 的预构建镜像 —— 具体用法见 `docker-compose.yml` 中注释掉的 `image:` 行。
+生产环境需要只读挂载证书并覆盖公网配置：
 
 ```yaml
 services:
   lore-auth:
-    # image: ghcr.io/arnochenfx/lore-auth-service:latest
-    # image: ghcr.io/arnochenfx/lore-auth-service:v1.0.0
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      PUBLIC_BASE_URL: "https://auth.example.com:8080"
+      JWT_ISSUER: "https://auth.example.com:8080"
+      JWT_AUDIENCE: "lore.example.com"
+      LORE_ENVIRONMENT: "production"
+      TLS_CERT_FILE: "/app/certs/fullchain.pem"
+      TLS_KEY_FILE: "/app/certs/privkey.pem"
+      ADMIN_PASSWORD: "替换为足够长的随机密码"
+    volumes:
+      - ./certs:/app/certs:ro
 ```
 
-当 `main` 分支推送了 `vX.X.X` 格式标签时，CI 会自动构建并发布镜像。也可以直接拉取：
+也可以由反向代理终止 HTTPS 与 gRPC TLS，但公开的 gRPC 路由必须保留 HTTP/2 gRPC 语义，普通 HTTP/1 代理无法工作。
 
-```bash
-docker pull ghcr.io/arnochenfx/lore-auth-service:latest
-```
+## 管理与仓库权限
 
-compose 文件挂载了两个命名 volume 做持久化：
+管理后台位于 `/admin`。Access Token 与 Refresh Token 只保存在当前标签页的 `sessionStorage` 中，关闭标签页或退出登录后会被清除。
 
-| Volume | 容器路径 | 内容 |
-|--------|----------|------|
-| `lore-auth-keys` | `/app/keys` | RSA 密钥对，删掉就轮换密钥 |
-| `lore-auth-data` | `/app/data` | SQLite 数据库 |
+通过 Lore ReBAC 创建的新仓库会自动登记，创建者取得 `read`、`write` 和 `admin`。对启用认证前已经存在的仓库：
 
-首次启动前在 `docker-compose.yml` 里改环境变量，至少改 `ADMIN_PASSWORD`：
+1. 找到 32 位十六进制 Lore Repository ID。
+2. 在管理后台登记 `urc-<repository-id>`。
+3. 为每个用户分配所需权限。
 
-```yaml
-environment:
-  ADMIN_USERNAME: "admin"
-  ADMIN_PASSWORD: "your-secure-password"
-  JWT_ISSUER: "http://your-host:8080"  # 必须是 Lore Server 能访问到的地址
-```
+管理员隐式拥有所有已登记仓库的权限；普通用户只能看到并交换显式授权仓库的 Token。
 
-### 使用 docker build + run
+## HTTP API
 
-```bash
-# 构建镜像
-docker build -t lore-auth .
+| 方法 | 路径 | 认证 | 作用 |
+|---|---|---|---|
+| `GET` | `/.well-known/jwks.json` | 无 | 供 Lore Server 使用的 RS256 公钥 |
+| `GET` | `/health_check` | 无 | HTTP 服务健康检查 |
+| `GET` | `/login` | 会话查询参数 | Lore 浏览器认证页 |
+| `POST` | `/auth/session/approve` | 会话表单 | 批准 Lore 浏览器会话 |
+| `POST` | `/auth/login` | 无 | REST 用户名密码登录 |
+| `POST` | `/auth/refresh` | Refresh Token | 轮换 REST Refresh Token |
+| `GET` | `/auth/me` | Bearer | 校验并查看 JWT |
+| `GET` | `/admin` | 无 | 管理后台 |
+| `GET/POST` | `/admin/users` | 管理员 Bearer | 列出或创建用户 |
+| `DELETE` | `/admin/users/:username` | 管理员 Bearer | 删除用户 |
+| `GET/POST` | `/admin/resources` | 管理员 Bearer | 列出或登记仓库 |
+| `PUT` | `/admin/resources/:id/users/:username` | 管理员 Bearer | 覆盖仓库权限 |
 
-# 用命名 volume 持久化密钥和数据
-docker run -d \
-  --name lore-auth \
-  -p 8080:8080 \
-  -e ADMIN_PASSWORD=your-secure-password \
-  -e JWT_ISSUER=http://your-host:8080 \
-  -v lore-auth-keys:/app/keys \
-  -v lore-auth-data:/app/data \
-  --restart unless-stopped \
-  lore-auth
-```
+## gRPC API
 
-### 验证容器
+两个服务使用 `proto/` 中的定义：
 
-```bash
-# 健康检查
-curl http://localhost:8080/health_check
+- `ucs.auth.UrcAuthApi`：浏览器会话、Token 交换、权限查询和用户查询
+- `ucs.auth.RebacApi`：Lore 仓库资源创建与删除
 
-# 登录
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"your-secure-password"}'
-```
-
-### Docker 中的密钥轮换
-
-```bash
-# 停容器
-docker-compose down
-
-# 删掉密钥 volume（下次启动会重新生成密钥对）
-docker volume rm lore-auth-keys
-
-# 重新启动，新密钥对生成，所有旧 token 失效
-docker-compose up -d
-```
-
-### Lore Server 连接 Docker 化的 Lore Auth
-
-把 Lore Server 的 `jwt_issuer` 和 JWK endpoint 指向容器可达的地址。如果 Lore Server 也在 Docker 里跑，把两个服务放在同一个 Docker 网络，用容器名做 hostname：
-
-```toml
-[server.auth]
-jwt_issuer = "http://lore-auth:8080"
-jwt_audience = ["lore-service"]
-
-[server.auth.jwk]
-endpoint = "http://lore-auth:8080/.well-known/jwks.json"
-```
-
-## 配置 Lore Server
-
-在 Lore Server 的 `local.toml` 里添加：
-
-```toml
-[server.auth]
-jwt_issuer = "http://localhost:8080"
-jwt_audience = ["lore-service"]
-
-[server.auth.jwk]
-endpoint = "http://localhost:8080/.well-known/jwks.json"
-```
-
-启动 Lore Server 后，它会从 Lore Auth 拉取 JWKS 公钥，对每个 gRPC 请求的 JWT 做签名验证。未携带有效 JWT 的请求直接拒绝。
-
-对应的环境变量覆盖（等价于上面的 TOML）：
-
-```bash
-LORE__SERVER__AUTH__JWT_ISSUER=http://localhost:8080
-LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
-# jwt_audience 是数组，只能从 TOML 文件配置，不能用环境变量
-```
-
-## API 一览
-
-| 方法 | 路径 | 认证 | 说明 |
-|------|------|------|------|
-| GET | `/.well-known/jwks.json` | 无 | JWKS 端点，供 Lore Server 验签用 |
-| GET | `/health_check` | 无 | 健康检查 |
-| POST | `/auth/login` | 无 | 用户名密码登录，返回 access + refresh token |
-| POST | `/auth/refresh` | 无 | 用 refresh token 换取新的 access token |
-| GET | `/auth/me` | Bearer | 验证当前 token，返回用户信息 |
-| GET | `/admin` | 无 | 浏览器端管理员面板，管理用户 |
-| POST | `/admin/users` | Bearer (admin) | 创建用户 |
-| GET | `/admin/users` | Bearer (admin) | 列出所有用户 |
-| DELETE | `/admin/users/:username` | Bearer (admin) | 删除用户 |
-
-### 管理员面板
-
-在浏览器打开 `http://localhost:8080/admin`，使用 admin 账号登录后即可在页面上列出、创建和删除用户，无需使用 `curl`。页面会自动在后台刷新过期的 access token。
-
-### Refresh Token
-
-`/auth/login` 会同时返回 `access_token`（默认 1 小时有效）和 `refresh_token`（默认 7 天有效）。access token 过期后，调用 `POST /auth/refresh` 并带上 refresh token 即可换取新的 access token 和新的 refresh token。旧的 refresh token 在用一次后会被吊销（rotation）。
-
-```bash
-# 登录
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"changeme"}'
-
-# access token 过期后刷新
-curl -X POST http://localhost:8080/auth/refresh \
-  -H "Content-Type: application/json" \
-  -d '{"refresh_token":"<refresh-token>"}'
-```
+`RefreshAuthSession` 和 API Key 交换当前返回 `UNIMPLEMENTED`。本项目固定的 Lore 客户端不会在浏览器登录中发送 Refresh Token；AuthN Token 过期后需要重新认证。管理 API 使用的 REST Refresh Token 轮换不受影响。
 
 ## 配置参数
 
-| 环境变量 | 默认值 | 说明 |
-|---------|--------|------|
-| `PORT` | `8080` | HTTP 监听端口 |
-| `JWT_ISSUER` | `http://localhost:8080` | JWT 签发者，必须与 Lore Server 的 `jwt_issuer` 一致 |
-| `JWT_AUDIENCE` | `lore-service` | JWT 受众，必须包含在 Lore Server 的 `jwt_audience` 列表里 |
-| `TOKEN_TTL` | `43200` | Access token 有效期（秒） |
-| `REFRESH_TOKEN_TTL` | `604800` | Refresh token 有效期（秒，默认 7 天） |
-| `KEY_DIR` | `./keys` | RSA 密钥对存储目录 |
-| `DB_PATH` | `./lore-auth.db` | SQLite 数据库路径 |
-| `ADMIN_USERNAME` | `admin` | 首次启动创建的管理员用户名 |
-| `ADMIN_PASSWORD` | `changeme` | 首次启动创建的管理员密码 |
+| 变量 | 默认值 | 说明 |
+|---|---:|---|
+| `HOST` | `0.0.0.0` | HTTP 绑定地址 |
+| `PORT` | `8080` | HTTP/HTTPS 端口 |
+| `GRPC_HOST` | `0.0.0.0` | gRPC 绑定地址 |
+| `GRPC_PORT` | `50051` | gRPC Auth/ReBAC 端口 |
+| `PUBLIC_BASE_URL` | `JWT_ISSUER` | 浏览器可访问的登录 Origin |
+| `JWT_ISSUER` | `http://localhost:8080` | JWT `iss` |
+| `JWT_AUDIENCE` | `localhost` | 逗号分隔的 JWT 受众 |
+| `LORE_ENVIRONMENT` | `local` | JWT `env` Claim |
+| `TOKEN_TTL` | `43200` | JWT 有效期（秒） |
+| `REFRESH_TOKEN_TTL` | `604800` | REST Refresh Token 有效期 |
+| `AUTH_SESSION_TTL` | `300` | 浏览器会话有效期 |
+| `AUTH_SESSION_MAX_ATTEMPTS` | `5` | 临时锁定前的失败次数 |
+| `AUTH_SESSION_LOCK_SECONDS` | `60` | 临时锁定时长 |
+| `KEY_DIR` | `./keys` | 持久化 RS256 密钥目录 |
+| `DB_PATH` | `./lore-auth.db` | SQLite 数据库 |
+| `ADMIN_USERNAME` | `admin` | 初始管理员 |
+| `ADMIN_PASSWORD` | `changeme` | 初始管理员密码 |
+| `TLS_CERT_FILE` | 未配置 | HTTP 与 gRPC 使用的 PEM 证书链 |
+| `TLS_KEY_FILE` | 未配置 | HTTP 与 gRPC 使用的 PEM 私钥 |
 
-## 项目结构
+## 验证
 
+```bash
+bun run typecheck
+bun test
 ```
-lore-auth/
-├── package.json
-├── tsconfig.json
-├── Dockerfile
-├── docker-compose.yml
-├── .dockerignore
-├── .env.example
-├── src/
-│   ├── config.ts    # 环境变量配置
-│   ├── keys.ts      # RSA 密钥对管理 + JWKS 生成
-│   ├── db.ts        # bun:sqlite 用户存储 + scrypt 密码哈希
-│   ├── jwt.ts       # JWT 签发/验证 (jose)
-│   └── index.ts     # Bun.serve HTTP 服务 + 路由
-└── keys/            # 自动生成的 RSA 密钥对 (gitignore)
-    ├── private.pem
-    ├── public.pem
-    └── kid.txt
-```
+
+集成测试会启动真实 gRPC Server，并验证：
+
+- 浏览器会话创建与批准
+- AuthN JWT 及 Lore 必需 Claims
+- 权限查询
+- 仓库范围 AuthZ 交换
+- 无效浏览器会话拒绝
+- 会话哈希持久化与创建者权限
 
 ## 安全说明
 
-- 密码用 scrypt 加盐哈希，不存在明文
-- RSA 2048 密钥对首次启动自动生成，持久化到 `KEY_DIR`
-- `kid` 使用 RFC 7638 JWK thumbprint，稳定可复现
-- Token 过期时间可配，默认 1 小时
-- 密钥对轮换：停服 → 删除 `KEY_DIR` → 重启自动生成新密钥（所有已签发 token 失效）
-
-## 当前限制
-
-Lore 开源版当前阶段（pre-1.0）的 CLI 还未完成 OAuth/token 注入流程（roadmap 上已规划）。这个认证服务的价值在于：
-
-1. **Lore Server 侧的 gRPC API 身份验证**已经可用，通过 SDK（lore-js / lore-python / lore-csharp / lore-go）直接调用时可以注入 JWT 作为 gRPC metadata
-2. 当 Lore CLI 的 OAuth 客户端支持落地后，这个服务直接就绪，无需改动
-3. 可以作为反向代理层挡在 Lore Server 前面做统一鉴权
+- 密码使用带盐 scrypt；用户名不存在时也执行等价哈希计算。
+- 浏览器会话秘密值与 Refresh Token 只保存 SHA-256 哈希。
+- 浏览器会话短期有效，并同时绑定 `client_state` 与 `session_code`。
+- 登录失败按浏览器会话进行次数限制和临时锁定。
+- JWT 与密码不会写入应用日志、浏览器 URL 或浏览器登录 HTML。
+- 浏览器页与管理页设置严格 CSP、防嵌入、禁止缓存和禁止 Referrer 响应头。
+- 删除 `KEY_DIR` 会轮换签名密钥，并使全部已签发 JWT 失效。
 
 ## 开源协议
 
-MIT，与 Lore 本身一致。
+MIT。

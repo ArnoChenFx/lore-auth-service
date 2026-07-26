@@ -1,320 +1,248 @@
 # Lore Auth Service
 
-A JWT authentication service built with TypeScript + Bun.js, providing JWT issuance and a JWKS endpoint for Epic Games' [Lore VCS](https://github.com/EpicGames/lore).
+Lore Auth Service is a TypeScript/Bun implementation of Lore's native browser authentication and repository authorization protocols. It exposes the `ucs.auth.UrcAuthApi` and `ucs.auth.RebacApi` gRPC services, issues Lore-compatible RS256 JWTs, publishes JWKS, and provides a small browser administration panel.
 
-[中文文档](README-zh.md)
+[中文文档](README-zh.md) · [Integration guide](AUTH_INTEGRATION.md)
 
-## How It Works
+## What is implemented
+
+- Native Lore browser login: start session, open login page, poll, and receive an AuthN token
+- AuthN and repository-scoped AuthZ JWTs with all claims required by Lore
+- Repository discovery through `LookupUserPermissions`
+- Resource creation/deletion through Lore ReBAC
+- Per-user `read`, `write`, and `admin` repository permissions
+- Username/password users with scrypt password hashing
+- JWKS verification for Lore Server
+- REST access/refresh tokens for the administration panel and API clients
+- SQLite persistence for users, hashed refresh tokens, hashed browser sessions, resources, and permissions
+
+## Authentication flow
 
 ```mermaid
-flowchart LR
-    C["Client\n(CLI)"]
-    A["Lore Auth\n(this svc)\nport :8080"]
-    S["Lore Server\nport :41337"]
-    J["Lore Auth\n/.well-known/jwks.json"]
+sequenceDiagram
+    participant C as Lore Client
+    participant A as Lore Auth gRPC :50051
+    participant B as System Browser
+    participant H as Lore Auth HTTPS :8080
+    participant S as Lore Server
 
-    C -->|"1. login (user/pass)"| A
-    A -->|"2. JWT (signed by RSA)"| C
-    C -->|"3. push/clone (Bearer JWT)"| S
-    S -->|"4. JWKS fetch\n(startup + on unknown kid)\nverify JWT via JWKS"| J
+    C->>A: StartAuthSession(client_state)
+    A-->>C: session_code + login_url
+    C->>B: Open login_url
+    B->>H: Submit username and password
+    H-->>B: Session approved
+    loop every 5 seconds
+      C->>A: GetAuthSession(client_state, session_code)
+    end
+    A-->>C: AuthN JWT
+    C->>A: Lookup permissions / exchange resources
+    A-->>C: repository-scoped AuthZ JWT
+    C->>S: Lore request with Bearer AuthZ JWT
+    S->>H: Fetch JWKS when required
 ```
 
-1. The client logs in to Lore Auth with username/password and receives a JWT.
-2. The client presents the JWT as a Bearer token when pushing to or cloning from the Lore Server.
-3. On startup, the Lore Server fetches the public key from the Lore Auth JWKS endpoint and uses it to verify JWT signatures.
-4. The Lore Server derives the partition (repository isolation boundary) from the authenticated session — a client cannot cross tenant boundaries by naming a different partition.
+The username and password are submitted only to the auth service's browser page. They do not enter Lore Client, and JWTs are never placed in browser URLs or page content.
 
-## Quick Start
+## Quick start for local development
 
-### Prerequisites
-
-- Bun >= 1.3 (https://bun.sh)
-
-### Install Dependencies
+Prerequisite: Bun 1.3 or newer.
 
 ```bash
-cd lore-auth
 bun install
-```
-
-### First Launch (auto-bootstrap admin)
-
-```bash
-# Option A: bootstrap command
-bun run bootstrap
-
-# Option B: first regular start detects empty DB and creates admin
-bun run start
-```
-
-The default admin credentials are `admin / changeme`. Customize them via environment variables or a `.env` file:
-
-```bash
 cp .env.example .env
-# Edit .env...
-```
-
-### Daily Start
-
-```bash
 bun run start
-# Or development mode (hot reload)
-bun run dev
 ```
 
-### Verify
+On the first start, an empty database receives the configured administrator. The development defaults are `admin / changeme`; change `ADMIN_PASSWORD` before exposing the service.
+
+Useful endpoints:
 
 ```bash
-# 1. Health check
 curl http://localhost:8080/health_check
-
-# 2. JWKS endpoint (this is what Lore Server fetches)
 curl http://localhost:8080/.well-known/jwks.json
-
-# 3. Log in to get a token
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"changeme"}'
-
-# 4. Verify token
-curl http://localhost:8080/auth/me \
-  -H "Authorization: Bearer <token>"
-
-# 5. Create a new user (requires admin token)
-curl -X POST http://localhost:8080/admin/users \
-  -H "Authorization: Bearer <admin-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"username":"alice","password":"alice123","is_admin":false}'
-
-# 6. List users
-curl http://localhost:8080/admin/users \
-  -H "Authorization: Bearer <admin-token>"
-
-# 7. Delete a user
-curl -X DELETE http://localhost:8080/admin/users/alice \
-  -H "Authorization: Bearer <admin-token>"
 ```
 
-### Issue a Test Token
+Open `http://localhost:8080/admin` to manage users, register repositories created before authentication was enabled, and assign repository access.
+
+The default gRPC endpoint is insecure and intended only for automated tests and local API development. The current Lore client converts its auth endpoint to HTTPS, so a real desktop login requires the production TLS setup below.
+
+## Production setup
+
+Use a DNS name such as `auth.example.com` and a certificate trusted by the machines running Lore Client and Lore Server. The same certificate can be used by this service on its HTTP and gRPC ports.
+
+Example environment:
+
+```dotenv
+HOST=0.0.0.0
+PORT=8080
+GRPC_HOST=0.0.0.0
+GRPC_PORT=50051
+
+PUBLIC_BASE_URL=https://auth.example.com:8080
+JWT_ISSUER=https://auth.example.com:8080
+JWT_AUDIENCE=lore.example.com
+LORE_ENVIRONMENT=production
+
+TLS_CERT_FILE=/run/secrets/lore-auth/fullchain.pem
+TLS_KEY_FILE=/run/secrets/lore-auth/privkey.pem
+
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=replace-with-a-long-random-password
+```
+
+Important:
+
+- `PUBLIC_BASE_URL` is the browser-visible HTTPS origin used in `login_url`.
+- The Lore auth endpoint is `https://auth.example.com:50051`.
+- `JWT_ISSUER` must exactly match Lore Server's `server.auth.jwt_issuer`.
+- `JWT_AUDIENCE` is a comma-separated list and must contain the actual hostname used by the Lore Server remote URL, for example `lore.example.com`. Do not use an abstract value such as `lore-service`.
+- The certificate must cover the auth endpoint hostname. For an internal CA, install that CA in the trust store of every Lore Client and Lore Server machine.
+
+### Lore Server configuration
+
+Add these values to the Lore Server override TOML:
+
+```toml
+[environment.endpoint]
+auth_url = "https://auth.example.com:50051"
+
+[server.auth]
+jwt_issuer = "https://auth.example.com:8080"
+jwt_audience = ["lore.example.com"]
+
+[server.auth.jwk]
+endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
+```
+
+Restart Lore Server after changing authentication settings. The server advertises `environment.endpoint.auth_url` to Lore clients, verifies JWT issuer/audience, and fetches signing keys from JWKS.
+
+### Lore Client
+
+Refresh the remote repository dialog after the server restarts. When no valid account is bound, Lore Client should launch the browser login automatically. Sign in on the Lore Auth page, return to the client, then bind the resulting account to the relevant repositories in the client's account manager.
+
+The previous `MissingToken` server log means the client reached Lore Server without a stored/bound authorization token. It is expected before the browser flow completes or when the auth URL/account binding is missing.
+
+## Docker
+
+The checked-in compose file starts a local development instance:
 
 ```bash
-# Prints a JWT to stdout — pipe it to other tools
-bun run src/index.ts --token-for=admin
+docker compose up -d --build
+docker compose logs -f lore-auth
 ```
 
-## Docker Deployment
+It exposes HTTP on `8080` and gRPC on `50051`, and persists `/app/keys` and `/app/data`.
 
-### Using docker-compose (recommended)
-
-```bash
-# Build and start in background
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop and remove container
- docker-compose down
-```
-
-#### Use the prebuilt image from GitHub Container Registry
-
-By default `docker-compose.yml` builds the image locally. You can switch to the image published by GitHub Actions instead — see the commented `image:` lines inside `docker-compose.yml`.
+For production, mount certificates read-only and override the public values:
 
 ```yaml
 services:
   lore-auth:
-    # image: ghcr.io/arnochenfx/lore-auth-service:latest
-    # image: ghcr.io/arnochenfx/lore-auth-service:v1.0.0
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      PUBLIC_BASE_URL: "https://auth.example.com:8080"
+      JWT_ISSUER: "https://auth.example.com:8080"
+      JWT_AUDIENCE: "lore.example.com"
+      LORE_ENVIRONMENT: "production"
+      TLS_CERT_FILE: "/app/certs/fullchain.pem"
+      TLS_KEY_FILE: "/app/certs/privkey.pem"
+      ADMIN_PASSWORD: "replace-with-a-long-random-password"
+    volumes:
+      - ./certs:/app/certs:ro
 ```
 
-Images are built automatically when a `vX.X.X` tag is pushed to the `main` branch. Pull it directly:
+Alternatively, terminate HTTPS and gRPC TLS at a reverse proxy. The public gRPC route must preserve HTTP/2 gRPC semantics; a normal HTTP/1 proxy is not sufficient.
 
-```bash
-docker pull ghcr.io/arnochenfx/lore-auth-service:latest
-```
+## Administration
 
-The compose file mounts two named volumes for persistence:
+The administration panel is available at `/admin`. Its access and refresh tokens live only in the current tab's `sessionStorage` and are removed when the tab closes or the operator signs out.
 
-| Volume | Mount point | Contents |
-|--------|------------|----------|
-| `lore-auth-keys` | `/app/keys` | RSA key pair — deleting this forces key rotation |
-| `lore-auth-data` | `/app/data` | SQLite database |
+New repositories created through Lore ReBAC are registered automatically and their creator receives `read`, `write`, and `admin`. For repositories that existed before auth was enabled:
 
-Customize environment variables in `docker-compose.yml` before first start. At minimum, change `ADMIN_PASSWORD`:
+1. Find the 32-hex-character Lore Repository ID.
+2. Register `urc-<repository-id>` in the administration panel.
+3. Assign the required permissions to each user.
 
-```yaml
-environment:
-  ADMIN_USERNAME: "admin"
-  ADMIN_PASSWORD: "your-secure-password"
-  JWT_ISSUER: "http://your-host:8080"  # must be reachable from Lore Server
-```
+Administrators have implicit access to all registered repositories. Ordinary users only see and exchange tokens for explicitly assigned repositories.
 
-### Using docker build + run
+## HTTP API
 
-```bash
-# Build the image
-docker build -t lore-auth .
+| Method | Path | Authentication | Purpose |
+|---|---|---|---|
+| `GET` | `/.well-known/jwks.json` | none | RS256 public keys for Lore Server |
+| `GET` | `/health_check` | none | HTTP service health |
+| `GET` | `/login` | session query | Lore browser session page |
+| `POST` | `/auth/session/approve` | session form | Approve a Lore browser session |
+| `POST` | `/auth/login` | none | REST username/password login |
+| `POST` | `/auth/refresh` | refresh token | Rotate a REST refresh token |
+| `GET` | `/auth/me` | Bearer | Validate and inspect a JWT |
+| `GET` | `/admin` | none | Administration panel |
+| `GET/POST` | `/admin/users` | admin Bearer | List/create users |
+| `DELETE` | `/admin/users/:username` | admin Bearer | Delete a user |
+| `GET/POST` | `/admin/resources` | admin Bearer | List/register repositories |
+| `PUT` | `/admin/resources/:id/users/:username` | admin Bearer | Replace repository permissions |
 
-# Run with a named volume for keys and data
-docker run -d \
-  --name lore-auth \
-  -p 8080:8080 \
-  -e ADMIN_PASSWORD=your-secure-password \
-  -e JWT_ISSUER=http://your-host:8080 \
-  -v lore-auth-keys:/app/keys \
-  -v lore-auth-data:/app/data \
-  --restart unless-stopped \
-  lore-auth
-```
+## gRPC API
 
-### Verify the container
+Both services use the definitions in `proto/`:
 
-```bash
-# Health check
-curl http://localhost:8080/health_check
+- `ucs.auth.UrcAuthApi`: browser sessions, token exchange, permission lookup, and user lookup
+- `ucs.auth.RebacApi`: Lore repository resource creation and deletion
 
-# Log in
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"your-secure-password"}'
-```
-
-### Key rotation in Docker
-
-```bash
-# Stop the container
-docker-compose down
-
-# Delete the keys volume (forces new key pair on next start)
-docker volume rm lore-auth-keys
-
-# Start again — new key pair is generated, all previously issued tokens become invalid
-docker-compose up -d
-```
-
-### Connecting Lore Server to a Dockerized Lore Auth
-
-Point the Lore Server's `jwt_issuer` and JWK endpoint at the host where the container is reachable. If Lore Server also runs in Docker, put both services on the same Docker network and use the container name as the hostname:
-
-```toml
-[server.auth]
-jwt_issuer = "http://lore-auth:8080"
-jwt_audience = ["lore-service"]
-
-[server.auth.jwk]
-endpoint = "http://lore-auth:8080/.well-known/jwks.json"
-```
-
-## Configure the Lore Server
-
-Add the following to the Lore Server's `local.toml`:
-
-```toml
-[server.auth]
-jwt_issuer = "http://localhost:8080"
-jwt_audience = ["lore-service"]
-
-[server.auth.jwk]
-endpoint = "http://localhost:8080/.well-known/jwks.json"
-```
-
-Once the Lore Server starts, it fetches the JWKS public key from Lore Auth and verifies the JWT signature on every gRPC request. Requests without a valid JWT are rejected.
-
-Equivalent environment-variable overrides:
-
-```bash
-LORE__SERVER__AUTH__JWT_ISSUER=http://localhost:8080
-LORE__SERVER__AUTH__JWK__ENDPOINT=http://localhost:8080/.well-known/jwks.json
-# jwt_audience is an array — it can only be set in a TOML file, not via env vars
-```
-
-## API Reference
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/.well-known/jwks.json` | none | JWKS endpoint for Lore Server signature verification |
-| GET | `/health_check` | none | Health check |
-| POST | `/auth/login` | none | Username/password login, returns access + refresh tokens |
-| POST | `/auth/refresh` | none | Exchange a refresh token for a new access token |
-| GET | `/auth/me` | Bearer | Verify current token, return current user info |
-| GET | `/admin` | none | Browser-based admin panel for managing users |
-| POST | `/admin/users` | Bearer (admin) | Create a user |
-| GET | `/admin/users` | Bearer (admin) | List all users |
-| DELETE | `/admin/users/:username` | Bearer (admin) | Delete a user |
-
-### Admin Panel
-
-Open `http://localhost:8080/admin` in a browser and log in with an admin account. From the panel you can list, create, and delete users without using `curl`. The panel automatically refreshes expired access tokens in the background.
-
-### Refresh Tokens
-
-`/auth/login` returns both an `access_token` (short-lived, default 1 hour) and a `refresh_token` (long-lived, default 7 days). When the access token expires, call `POST /auth/refresh` with the refresh token to get a new access token and a new refresh token. The old refresh token is rotated (revoked) after use.
-
-```bash
-# Login
-curl -X POST http://localhost:8080/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"changeme"}'
-
-# Refresh when the access token expires
-curl -X POST http://localhost:8080/auth/refresh \
-  -H "Content-Type: application/json" \
-  -d '{"refresh_token":"<refresh-token>"}'
-```
+`RefreshAuthSession` and API-key exchange return `UNIMPLEMENTED`. The fixed Lore client used by this project does not send refresh tokens during browser login; users authenticate again after the AuthN token expires. REST refresh-token rotation remains supported for the administration API.
 
 ## Configuration
 
-| Env Variable | Default | Description |
-|-------------|---------|-------------|
-| `PORT` | `8080` | HTTP listen port |
-| `JWT_ISSUER` | `http://localhost:8080` | JWT issuer — must match the Lore Server's `jwt_issuer` |
-| `JWT_AUDIENCE` | `lore-service` | JWT audience — must be included in the Lore Server's `jwt_audience` list |
-| `TOKEN_TTL` | `43200` | Access token lifetime in seconds |
-| `REFRESH_TOKEN_TTL` | `604800` | Refresh token lifetime in seconds (default 7 days) |
-| `KEY_DIR` | `./keys` | RSA key pair storage directory |
-| `DB_PATH` | `./lore-auth.db` | SQLite database path |
-| `ADMIN_USERNAME` | `admin` | Admin username created on first launch |
-| `ADMIN_PASSWORD` | `changeme` | Admin password created on first launch |
+| Variable | Default | Description |
+|---|---:|---|
+| `HOST` | `0.0.0.0` | HTTP bind address |
+| `PORT` | `8080` | HTTP/HTTPS port |
+| `GRPC_HOST` | `0.0.0.0` | gRPC bind address |
+| `GRPC_PORT` | `50051` | gRPC Auth/ReBAC port |
+| `PUBLIC_BASE_URL` | `JWT_ISSUER` | Browser-visible login origin |
+| `JWT_ISSUER` | `http://localhost:8080` | JWT `iss` |
+| `JWT_AUDIENCE` | `localhost` | Comma-separated JWT audiences |
+| `LORE_ENVIRONMENT` | `local` | JWT `env` claim |
+| `TOKEN_TTL` | `43200` | JWT lifetime in seconds |
+| `REFRESH_TOKEN_TTL` | `604800` | REST refresh-token lifetime |
+| `AUTH_SESSION_TTL` | `300` | Browser session lifetime |
+| `AUTH_SESSION_MAX_ATTEMPTS` | `5` | Failed logins before a temporary lock |
+| `AUTH_SESSION_LOCK_SECONDS` | `60` | Temporary lock duration |
+| `KEY_DIR` | `./keys` | persisted RS256 key directory |
+| `DB_PATH` | `./lore-auth.db` | SQLite database |
+| `ADMIN_USERNAME` | `admin` | bootstrap administrator |
+| `ADMIN_PASSWORD` | `changeme` | bootstrap password |
+| `TLS_CERT_FILE` | unset | PEM certificate chain for HTTP and gRPC |
+| `TLS_KEY_FILE` | unset | PEM private key for HTTP and gRPC |
 
-## Project Structure
+## Verification
 
-```
-lore-auth/
-├── package.json
-├── tsconfig.json
-├── Dockerfile
-├── docker-compose.yml
-├── .dockerignore
-├── .env.example
-├── src/
-│   ├── config.ts    # Environment variable configuration
-│   ├── keys.ts      # RSA key pair management + JWKS generation
-│   ├── db.ts        # bun:sqlite user storage + scrypt password hashing
-│   ├── jwt.ts       # JWT signing/verification (jose)
-│   └── index.ts     # Bun.serve HTTP service + routing
-└── keys/            # Auto-generated RSA key pair (gitignored)
-    ├── private.pem
-    ├── public.pem
-    └── kid.txt
+```bash
+bun run typecheck
+bun test
 ```
 
-## Security Notes
+The integration suite starts a real gRPC server and verifies:
 
-- Passwords are hashed with scrypt + salt — no plaintext stored
-- RSA 2048 key pair is auto-generated on first launch and persisted to `KEY_DIR`
-- `kid` uses the RFC 7638 JWK thumbprint — stable and reproducible
-- Token TTL is configurable, default 1 hour
-- Key rotation: stop the service, delete `KEY_DIR`, restart — a new key pair is generated and all previously issued tokens become invalid
+- browser session creation and approval
+- AuthN JWT issuance and required Lore claims
+- permission lookup
+- repository-scoped AuthZ exchange
+- invalid browser-session rejection
+- hashed session persistence and creator permissions
 
-## Current Limitations
+## Security
 
-The open-source Lore CLI (pre-1.0) does not yet support OAuth/token injection — this is on the roadmap. The value of this auth service today:
-
-1. **Lore Server gRPC API authentication** is already functional — when calling through the SDKs (lore-js / lore-python / lore-csharp / lore-go), JWTs can be injected as gRPC metadata.
-2. When Lore CLI OAuth client support lands, this service is ready to go — no modifications needed.
-3. Can be deployed as a reverse proxy layer in front of the Lore Server for unified authentication.
+- Passwords use salted scrypt hashes; unknown users perform an equivalent hash operation.
+- Browser session secrets and refresh tokens are stored only as SHA-256 hashes.
+- Browser session URLs are short-lived and bound to both `client_state` and `session_code`.
+- Login attempts are rate-limited per browser session.
+- JWTs and passwords are not written to application logs, browser URLs, or browser login HTML.
+- Browser and administration pages set restrictive CSP, anti-framing, no-cache, and no-referrer headers.
+- Removing `KEY_DIR` rotates the signing key and invalidates all issued JWTs.
 
 ## License
 
-MIT — same as Lore itself.
+MIT.

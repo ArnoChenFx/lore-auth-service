@@ -27,31 +27,39 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy source code and project configuration.
 COPY package.json bun.lock tsconfig.json ./
 COPY src/ ./src/
+COPY proto/ ./proto/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Create data directories and set ownership.
 # keys/   Stores RSA key pairs (persisted to a volume).
 # data/   Stores the SQLite database (persisted to a volume).
+# certs/  Optional production TLS certificate and private key.
 # The entrypoint will re-apply ownership at runtime to handle named volumes.
-RUN mkdir -p /app/keys /app/data \
+RUN mkdir -p /app/keys /app/data /app/certs \
     && chown -R lore:lore /app \
     && chmod +x /usr/local/bin/docker-entrypoint.sh
 
-EXPOSE 8080
+EXPOSE 8080 50051
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 
 # Health check.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD bun -e "fetch('http://localhost:8080/health_check').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    CMD bun -e "fetch(process.env.HEALTHCHECK_URL).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # Default environment variables (can be overridden by docker-compose or -e).
 ENV PORT=8080 \
+    GRPC_PORT=50051 \
     KEY_DIR=/app/keys \
     DB_PATH=/app/data/lore-auth.db \
     JWT_ISSUER=http://localhost:8080 \
-    JWT_AUDIENCE=lore-service \
-    TOKEN_TTL=3600 \
+    JWT_AUDIENCE=localhost \
+    PUBLIC_BASE_URL=http://localhost:8080 \
+    LORE_ENVIRONMENT=local \
+    TOKEN_TTL=43200 \
+    REFRESH_TOKEN_TTL=604800 \
+    AUTH_SESSION_TTL=300 \
+    HEALTHCHECK_URL=http://localhost:8080/health_check \
     ADMIN_USERNAME=admin \
     ADMIN_PASSWORD=changeme
 

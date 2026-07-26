@@ -58,7 +58,7 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       font-size: 0.875rem;
       color: var(--muted);
     }
-    input[type="text"], input[type="password"] {
+    input[type="text"], input[type="password"], select {
       width: 100%;
       padding: 0.6rem 0.75rem;
       background: var(--input-bg);
@@ -68,9 +68,29 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       font-size: 0.95rem;
       margin-bottom: 0.75rem;
     }
+    select { appearance: none; }
     input[type="checkbox"] { margin-right: 0.5rem; }
     .row { display: flex; gap: 0.75rem; align-items: center; }
     .row input { flex: 1; margin-bottom: 0; }
+    .grid-two { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+    .permissions {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin: 0.25rem 0 1rem;
+    }
+    .permissions label {
+      display: inline-flex;
+      align-items: center;
+      color: var(--text);
+      margin: 0;
+    }
+    code {
+      color: #a9c4ff;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 0.76rem;
+      word-break: break-all;
+    }
     button {
       padding: 0.6rem 1rem;
       border: none;
@@ -148,7 +168,7 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       <div class="toolbar">
         <span id="currentUser"></span>
         <div>
-          <button class="btn-secondary" onclick="loadUsers()">Refresh</button>
+          <button class="btn-secondary" onclick="refreshDashboard()">Refresh</button>
           <button class="btn-secondary" onclick="logout()">Sign out</button>
         </div>
       </div>
@@ -174,6 +194,46 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
           <tbody id="usersTable"></tbody>
         </table>
       </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Register existing repository</h3>
+        <p class="subtitle" style="margin-top:-.35rem">
+          New repositories register automatically through Lore ReBAC. Use this only for repositories
+          created before authentication was enabled.
+        </p>
+        <div class="row">
+          <input id="resourceId" type="text" placeholder="urc-&lt;32 hexadecimal repository id&gt;">
+          <input id="resourceName" type="text" placeholder="Repository name">
+          <button class="btn-primary" onclick="registerResource()">Register</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0">Repository access</h3>
+        <div class="grid-two">
+          <div>
+            <label for="accessResource">Repository</label>
+            <select id="accessResource"></select>
+          </div>
+          <div>
+            <label for="accessUser">User</label>
+            <select id="accessUser"></select>
+          </div>
+        </div>
+        <div class="permissions">
+          <label><input id="permissionRead" type="checkbox"> Read</label>
+          <label><input id="permissionWrite" type="checkbox"> Write</label>
+          <label><input id="permissionAdmin" type="checkbox"> Admin</label>
+        </div>
+        <button class="btn-primary" onclick="saveAccess()">Save repository access</button>
+
+        <table>
+          <thead>
+            <tr><th>Repository</th><th>User</th><th>Permissions</th></tr>
+          </thead>
+          <tbody id="resourcesTable"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -183,8 +243,12 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
     const usernameKey = 'lore_auth_admin_user';
     let isRefreshing = false;
     let refreshPromise = null;
+    let usersCache = [];
+    let resourcesCache = [];
+    let assignmentsCache = [];
 
-    let currentUsername = localStorage.getItem(usernameKey) || '';
+    // 管理 Token 仅保留在当前标签页会话中，关闭标签页后自动清除。
+    let currentUsername = sessionStorage.getItem(usernameKey) || '';
 
     function showMessage(text, type = 'error') {
       const el = document.getElementById('message');
@@ -195,19 +259,19 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
     }
 
     function getAccessToken() {
-      return localStorage.getItem(tokenKey);
+      return sessionStorage.getItem(tokenKey);
     }
 
     function setTokens(accessToken, refreshToken) {
-      if (accessToken) localStorage.setItem(tokenKey, accessToken);
-      if (refreshToken) localStorage.setItem(refreshKey, refreshToken);
+      if (accessToken) sessionStorage.setItem(tokenKey, accessToken);
+      if (refreshToken) sessionStorage.setItem(refreshKey, refreshToken);
     }
 
     async function refreshAccessToken() {
       if (isRefreshing) return refreshPromise;
       isRefreshing = true;
       refreshPromise = (async function() {
-        const refreshToken = localStorage.getItem(refreshKey);
+        const refreshToken = sessionStorage.getItem(refreshKey);
         if (!refreshToken) throw new Error('No refresh token');
         const res = await fetch('/auth/refresh', {
           method: 'POST',
@@ -237,7 +301,7 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       });
       const data = await res.json().catch(() => ({}));
 
-      if (res.status === 401 && retry && localStorage.getItem(refreshKey)) {
+      if (res.status === 401 && retry && sessionStorage.getItem(refreshKey)) {
         try {
           const newToken = await refreshAccessToken();
           return request(url, options, false);
@@ -266,7 +330,7 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
         if (!res.ok) throw new Error(data.error || 'Login failed');
 
         setTokens(data.token, data.refresh_token);
-        localStorage.setItem(usernameKey, data.user.username);
+        sessionStorage.setItem(usernameKey, data.user.username);
         currentUsername = data.user.username;
         enterDashboard();
       } catch (err) {
@@ -275,9 +339,9 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
     }
 
     function logout() {
-      localStorage.removeItem(tokenKey);
-      localStorage.removeItem(refreshKey);
-      localStorage.removeItem(usernameKey);
+      sessionStorage.removeItem(tokenKey);
+      sessionStorage.removeItem(refreshKey);
+      sessionStorage.removeItem(usernameKey);
       currentUsername = '';
       document.getElementById('loginCard').classList.remove('hidden');
       document.getElementById('dashboard').classList.add('hidden');
@@ -287,12 +351,17 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       document.getElementById('loginCard').classList.add('hidden');
       document.getElementById('dashboard').classList.remove('hidden');
       document.getElementById('currentUser').textContent = 'Signed in as ' + currentUsername;
-      loadUsers();
+      refreshDashboard();
+    }
+
+    async function refreshDashboard() {
+      await Promise.all([loadUsers(), loadResources()]);
     }
 
     async function loadUsers() {
       try {
         const data = await request('/admin/users');
+        usersCache = data.users;
         const tbody = document.getElementById('usersTable');
         tbody.innerHTML = '';
         data.users.forEach(u => {
@@ -306,9 +375,120 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
             '<td>' + actionCell + '</td>';
           tbody.appendChild(tr);
         });
+        updateAccessOptions();
       } catch (err) {
         showMessage(err.message);
         if (err.message.includes('invalid') || err.message.includes('expired')) logout();
+      }
+    }
+
+    async function loadResources() {
+      try {
+        const data = await request('/admin/resources');
+        resourcesCache = data.resources || [];
+        assignmentsCache = data.assignments || [];
+        const tbody = document.getElementById('resourcesTable');
+        tbody.innerHTML = '';
+
+        if (!assignmentsCache.length) {
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td colspan="3" style="color:var(--muted)">No explicit repository access.</td>';
+          tbody.appendChild(tr);
+        } else {
+          assignmentsCache.forEach(assignment => {
+            const resource = resourcesCache.find(item => item.resource_id === assignment.resource_id);
+            const tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td><div>' + escapeHtml(resource ? resource.resource_name : assignment.resource_id) + '</div>' +
+              '<code>' + escapeHtml(assignment.resource_id) + '</code></td>' +
+              '<td>' + escapeHtml(assignment.username) + '</td>' +
+              '<td>' + assignment.permission.map(item => '<span class="badge">' + escapeHtml(item) + '</span>').join(' ') + '</td>';
+            tbody.appendChild(tr);
+          });
+        }
+        updateAccessOptions();
+        syncPermissionCheckboxes();
+      } catch (err) {
+        showMessage(err.message);
+      }
+    }
+
+    function updateAccessOptions() {
+      const resourceSelect = document.getElementById('accessResource');
+      const userSelect = document.getElementById('accessUser');
+      const previousResource = resourceSelect.value;
+      const previousUser = userSelect.value;
+
+      resourceSelect.innerHTML = '';
+      resourcesCache.forEach(resource => {
+        resourceSelect.add(new Option(resource.resource_name + ' · ' + resource.resource_id, resource.resource_id));
+      });
+      userSelect.innerHTML = '';
+      usersCache.forEach(user => {
+        userSelect.add(new Option(user.username + (user.is_admin ? ' · admin' : ''), user.username));
+      });
+      if (resourcesCache.some(item => item.resource_id === previousResource)) {
+        resourceSelect.value = previousResource;
+      }
+      if (usersCache.some(item => item.username === previousUser)) {
+        userSelect.value = previousUser;
+      }
+    }
+
+    function syncPermissionCheckboxes() {
+      const resourceId = document.getElementById('accessResource').value;
+      const username = document.getElementById('accessUser').value;
+      const assignment = assignmentsCache.find(
+        item => item.resource_id === resourceId && item.username === username
+      );
+      const permissions = new Set(assignment ? assignment.permission : []);
+      document.getElementById('permissionRead').checked = permissions.has('read');
+      document.getElementById('permissionWrite').checked = permissions.has('write');
+      document.getElementById('permissionAdmin').checked = permissions.has('admin');
+    }
+
+    document.getElementById('accessResource').addEventListener('change', syncPermissionCheckboxes);
+    document.getElementById('accessUser').addEventListener('change', syncPermissionCheckboxes);
+
+    async function registerResource() {
+      const resourceId = document.getElementById('resourceId').value.trim();
+      const resourceName = document.getElementById('resourceName').value.trim();
+      if (!resourceId || !resourceName) {
+        return showMessage('Repository ID and name are required.');
+      }
+      try {
+        await request('/admin/resources', {
+          method: 'POST',
+          body: JSON.stringify({ resource_id: resourceId, resource_name: resourceName })
+        });
+        document.getElementById('resourceId').value = '';
+        document.getElementById('resourceName').value = '';
+        showMessage('Repository registered.', 'success');
+        await loadResources();
+      } catch (err) {
+        showMessage(err.message);
+      }
+    }
+
+    async function saveAccess() {
+      const resourceId = document.getElementById('accessResource').value;
+      const username = document.getElementById('accessUser').value;
+      if (!resourceId || !username) {
+        return showMessage('Select a repository and user first.');
+      }
+      const permissions = [];
+      if (document.getElementById('permissionRead').checked) permissions.push('read');
+      if (document.getElementById('permissionWrite').checked) permissions.push('write');
+      if (document.getElementById('permissionAdmin').checked) permissions.push('admin');
+      try {
+        await request(
+          '/admin/resources/' + encodeURIComponent(resourceId) + '/users/' + encodeURIComponent(username),
+          { method: 'PUT', body: JSON.stringify({ permissions }) }
+        );
+        showMessage('Repository access updated.', 'success');
+        await loadResources();
+      } catch (err) {
+        showMessage(err.message);
       }
     }
 
@@ -366,7 +546,7 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
     }
 
     // Auto-enter dashboard if a token is already stored
-    if (localStorage.getItem(tokenKey)) {
+    if (sessionStorage.getItem(tokenKey)) {
       enterDashboard();
     }
   </script>
@@ -379,6 +559,14 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
 export function handleAdminPanel(): Response {
   return new Response(ADMIN_PANEL_HTML, {
     status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Content-Security-Policy":
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+    },
   });
 }
