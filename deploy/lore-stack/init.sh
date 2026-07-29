@@ -119,7 +119,8 @@ esac
 
 # Lore Server 与健康检查都通过用户填写的外部地址访问 Auth，因此自定义公网或内网
 # 证书不需要额外包含 Compose 的内部服务名。
-cat > "$output_dir/config/local.toml" <<EOF
+# 初始化器只管理 stack.toml；同目录下的 local.toml 完全由用户自行维护。
+cat > "$output_dir/config/stack.toml" <<EOF
 [server.quic.certificate]
 cert_file = "/run/lore-stack/fullchain.pem"
 pkey_file = "/run/lore-stack/privkey.pem"
@@ -149,6 +150,6 @@ EOF
 chown 1001:1001 "$output_dir/privkey.pem"
 chmod 600 "$output_dir/privkey.pem"
 chmod 644 "$output_dir/ca.pem" "$output_dir/fullchain.pem"
-chmod 644 "$output_dir/config/local.toml"
+chmod 644 "$output_dir/config/stack.toml"
 
 echo "Lore Stack 配置已生成，外部主机: $external_host，TLS 模式: $tls_mode"

@@ -352,6 +352,37 @@ LORE_TLS_CA_FILE=ca.pem
 
 初始化阶段会校验证书与私钥是否匹配，以及证书是否覆盖 `LORE_EXTERNAL_HOST`。自定义证书目录已被 Git 忽略，切勿提交私钥。
 
+#### Lore Server 自定义覆盖配置
+
+初始化容器将自动联动配置写入 `stack.toml`，不会再覆盖用户的 `local.toml`。需要增加 Telemetry 或其他 Lore Server 参数时：
+
+```bash
+cp deploy/lore-stack/config/local.toml.example deploy/lore-stack/config/local.toml
+```
+
+例如：
+
+```toml
+[telemetry.logger]
+format = "text"
+output = "stdout"
+enable_otlp = false
+
+[server.http]
+store_health_check = true
+```
+
+然后重新运行初始化容器并重启 Lore Server：
+
+```bash
+docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml \
+  run --rm lore-stack-init
+docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml \
+  up -d --force-recreate lore-server
+```
+
+Compose 将 `LORE_SERVER_CONFIG_DIR` 直接挂载给初始化容器和 Lore Server。初始化器只创建或覆盖该目录中的 `stack.toml`，不会读取、复制、修改或删除 `local.toml`。Lore 按 `stack.toml`、`local.toml` 的顺序加载配置，因此 `local.toml` 中的同名字段优先级更高。不要覆盖认证地址、JWT、JWKS、存储路径及 QUIC/gRPC 证书表，否则可能破坏自动联动。
+
 生产环境需要只读挂载证书并覆盖公网配置：
 
 ```yaml

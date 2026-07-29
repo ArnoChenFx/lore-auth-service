@@ -32,6 +32,8 @@ services:
     volumes:
       - lore-stack-config:/output
       - "${LORE_TLS_SOURCE_DIR:-./deploy/lore-stack/certs}:/input:ro"
+      # stack.toml is generated here; an optional local.toml in the same host directory is untouched.
+      - "${LORE_SERVER_CONFIG_DIR:-./deploy/lore-stack/config}:/output/config"
 
   lore-auth:
     # Use the prebuilt GHCR image by default. Running `up --build` rebuilds it from this checkout.
@@ -91,10 +93,13 @@ services:
       - "${LORE_SERVER_HTTP_PORT:-41339}:41339/tcp"
     environment:
       LORE_CONFIG_PATH: "/run/lore-stack/config"
-      LORE_ENV: "local"
+      # Lore loads stack.toml first and the user-maintained local.toml last.
+      LORE_ENV: "stack"
     volumes:
       - lore-server-data:/data
       - lore-stack-config:/run/lore-stack:ro
+      # Mount the host config directory directly so Lore can layer local.toml after stack.toml.
+      - "${LORE_SERVER_CONFIG_DIR:-./deploy/lore-stack/config}:/run/lore-stack/config:ro"
     # The official runtime image starts as root, allowing the shared CA to be trusted first.
     entrypoint: ["/bin/sh", "-c"]
     command:

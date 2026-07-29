@@ -332,6 +332,8 @@ docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml up -d
 
 The default `LORE_TLS_MODE=auto` creates a persistent local CA and a certificate covering the external host plus the internal Compose service names. Lore Server trusts that CA automatically. The default Lore Server image is `ghcr.io/arnochenfx/lore-server:latest`, built manually by this repository's GitHub Actions workflow from Epic Games' official source. Each Lore Client machine must still import the exported `ca.pem` into its operating-system trust store; Compose intentionally does not perform this privileged host operation. See [README-zh.md](README-zh.md) for addresses, CA export steps, custom certificate mode, and operational notes.
 
+The initializer only creates or replaces `stack.toml` in `LORE_SERVER_CONFIG_DIR`; it never reads, copies, modifies, migrates, or deletes `local.toml`. Place an optional user-maintained `local.toml` in that directory to add telemetry or other Lore Server overrides. Lore loads it after `stack.toml`. Avoid overriding the generated authentication, JWT, JWKS, storage, and certificate tables.
+
 For production, mount certificates read-only and override the public values:
 
 ```yaml

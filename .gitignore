@@ -5,6 +5,8 @@ keys/
 .env.lore-stack
 deploy/lore-stack/certs/*
 !deploy/lore-stack/certs/.gitkeep
+deploy/lore-stack/config/local.toml
+deploy/lore-stack/config/stack.toml
 dist/
 # Bun Compile 在 Windows 产物被短暂锁定时可能遗留的临时可执行文件。
 .*.bun-build
