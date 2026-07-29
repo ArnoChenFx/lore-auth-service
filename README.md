@@ -320,6 +320,18 @@ docker compose logs -f lore-auth
 
 It exposes HTTP on `8080` and gRPC on `50051`, and persists `/app/keys` and `/app/data`.
 
+### One-command Lore Server + Lore Auth stack
+
+`docker-compose.lore-stack.yml` starts Lore Server, Lore Auth, and a one-shot configuration initializer. A single `LORE_EXTERNAL_HOST` value drives certificate SANs, the browser URL, JWT issuer/audience, Auth gRPC URL, and the Lore Server JWKS configuration. This supports LAN deployments addressed by an IP such as `192.168.1.2`.
+
+```bash
+cp .env.lore-stack.example .env.lore-stack
+# Edit LORE_EXTERNAL_HOST, ADMIN_PASSWORD, and other values.
+docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml up -d --build
+```
+
+The default `LORE_TLS_MODE=auto` creates a persistent local CA and a certificate covering the external host plus the internal Compose service names. Lore Server trusts that CA automatically. The default Lore Server image is `ghcr.io/arnochenfx/lore-server:latest`, built manually by this repository's GitHub Actions workflow from Epic Games' official source. Each Lore Client machine must still import the exported `ca.pem` into its operating-system trust store; Compose intentionally does not perform this privileged host operation. See [README-zh.md](README-zh.md) for addresses, CA export steps, custom certificate mode, and operational notes.
+
 For production, mount certificates read-only and override the public values:
 
 ```yaml

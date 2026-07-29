@@ -13,6 +13,8 @@ on:
 env:
   # Full image name; GitHub Container Registry requires lowercase owner/repo
   IMAGE_NAME: ghcr.io/arnochenfx/lore-auth-service
+  # TLS/config initializer image used by the combined Lore stack preset
+  INIT_IMAGE_NAME: ghcr.io/arnochenfx/lore-stack-init
 
 jobs:
   build-and-push:
@@ -79,7 +81,19 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
 
-      # 7. Build and push the image with GitHub Actions cache
+      # 7. Extract matching tags for the one-shot stack initializer image
+      - name: Extract initializer Docker metadata
+        id: init-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.INIT_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      # 8. Build and push the Lore Auth image with GitHub Actions cache
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
@@ -89,5 +103,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=lore-auth-service
+          cache-to: type=gha,mode=max,scope=lore-auth-service
+
+      # 9. Build and push the small certificate/config initializer image
+      - name: Build and push stack initializer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/lore-stack/cert-init.Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.init-meta.outputs.tags }}
+          labels: ${{ steps.init-meta.outputs.labels }}
+          cache-from: type=gha,scope=lore-stack-init
+          cache-to: type=gha,mode=max,scope=lore-stack-init

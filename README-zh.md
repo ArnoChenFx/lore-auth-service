@@ -312,6 +312,46 @@ docker compose logs -f lore-auth
 
 它会暴露 HTTP `8080` 与 gRPC `50051`，并持久化 `/app/keys` 和 `/app/data`。
 
+### Lore Server + Lore Auth 一键联动预设
+
+项目另提供 `docker-compose.lore-stack.yml`，可同时启动 Lore Server、Lore Auth 和一次性配置初始化容器。该预设会从同一个 `LORE_EXTERNAL_HOST` 推导证书 SAN、浏览器地址、JWT issuer/audience、Auth gRPC 地址和 Lore Server JWKS 配置，适合 `192.168.1.2` 一类内网 IP 部署。
+
+```bash
+cp .env.lore-stack.example .env.lore-stack
+# 编辑 LORE_EXTERNAL_HOST、ADMIN_PASSWORD 等值
+docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml up -d --build
+```
+
+默认 `LORE_TLS_MODE=auto`：初始化容器会创建持久化本地 CA，并签发覆盖外部 IP、`lore-auth`、`lore-server`、`localhost` 的证书。证书保存在 Docker 命名卷中，普通重启不会轮换。Lore Server 默认拉取 `ghcr.io/arnochenfx/lore-server:latest`，该镜像由仓库中的手动 GitHub Actions 工作流从 Epic Games 官方源码构建。
+
+启动后常用地址（以 `192.168.1.2` 为例）：
+
+- Lore Server：`lore://192.168.1.2:41337`
+- Lore Auth 管理后台：`https://192.168.1.2:8080/admin`
+- Lore Auth gRPC：`https://192.168.1.2:50051`
+- Lore Server 健康检查：`http://192.168.1.2:41339/health_check`
+
+自动生成的 CA 不是公网受信 CA。Lore Server 容器会自动信任它，但每台 Lore Client 所在机器仍须由管理员把 CA 加入系统信任库。可从命名卷导出 CA：
+
+```bash
+docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml \
+  cp lore-stack-init:/output/ca.pem ./lore-stack-ca.pem
+```
+
+然后按操作系统的受信任根证书流程安装 `lore-stack-ca.pem`，重启 Lore Client。Compose 不会自动修改宿主机信任库，因为该操作需要管理员权限。若 `LORE_EXTERNAL_HOST` 改变，初始化容器会重新创建 CA 和服务器证书，客户端也需要重新安装新的 CA。
+
+使用已有证书时，将证书链、私钥和签发 CA 放入 `LORE_TLS_SOURCE_DIR`，并设置：
+
+```dotenv
+LORE_TLS_MODE=custom
+LORE_TLS_SOURCE_DIR=./deploy/lore-stack/certs
+LORE_TLS_CERT_FILE=fullchain.pem
+LORE_TLS_KEY_FILE=privkey.pem
+LORE_TLS_CA_FILE=ca.pem
+```
+
+初始化阶段会校验证书与私钥是否匹配，以及证书是否覆盖 `LORE_EXTERNAL_HOST`。自定义证书目录已被 Git 忽略，切勿提交私钥。
+
 生产环境需要只读挂载证书并覆盖公网配置：
 
 ```yaml

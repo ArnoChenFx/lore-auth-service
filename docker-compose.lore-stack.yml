@@ -1,0 +1,106 @@
+# One-command Lore Server + Lore Auth deployment preset.
+# Usage: copy .env.lore-stack.example to .env.lore-stack, then run:
+# docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml up -d --build
+#
+# Prebuilt application images are available from GitHub Container Registry:
+#   ghcr.io/arnochenfx/lore-stack-init:latest
+#   ghcr.io/arnochenfx/lore-auth-service:latest
+#   ghcr.io/arnochenfx/lore-server:latest
+# Override LORE_STACK_INIT_IMAGE, LORE_AUTH_IMAGE, or LORE_SERVER_IMAGE in
+# .env.lore-stack to pin another tag, such as lore-server:sha-0123456789ab.
+# To run only prebuilt images without compiling anything locally:
+#   docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml pull
+#   docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml up -d --no-build
+
+services:
+  lore-stack-init:
+    # The auth image publishing workflow builds and versions this initializer alongside Lore Auth.
+    build:
+      context: .
+      dockerfile: deploy/lore-stack/cert-init.Dockerfile
+    image: "${LORE_STACK_INIT_IMAGE:-ghcr.io/arnochenfx/lore-stack-init:latest}"
+    restart: "no"
+    environment:
+      LORE_EXTERNAL_HOST: "${LORE_EXTERNAL_HOST:-192.168.1.2}"
+      LORE_TLS_MODE: "${LORE_TLS_MODE:-auto}"
+      LORE_TLS_CERT_FILE: "${LORE_TLS_CERT_FILE:-fullchain.pem}"
+      LORE_TLS_KEY_FILE: "${LORE_TLS_KEY_FILE:-privkey.pem}"
+      LORE_TLS_CA_FILE: "${LORE_TLS_CA_FILE:-ca.pem}"
+      LORE_TLS_VALID_DAYS: "${LORE_TLS_VALID_DAYS:-825}"
+      LORE_AUTH_HTTPS_PORT: "${LORE_AUTH_HTTPS_PORT:-8080}"
+      LORE_AUTH_GRPC_PORT: "${LORE_AUTH_GRPC_PORT:-50051}"
+    volumes:
+      - lore-stack-config:/output
+      - "${LORE_TLS_SOURCE_DIR:-./deploy/lore-stack/certs}:/input:ro"
+
+  lore-auth:
+    # Use the prebuilt GHCR image by default. Running `up --build` rebuilds it from this checkout.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: "${LORE_AUTH_IMAGE:-ghcr.io/arnochenfx/lore-auth-service:latest}"
+    container_name: lore-auth
+    restart: unless-stopped
+    depends_on:
+      lore-stack-init:
+        condition: service_completed_successfully
+    ports:
+      - "${LORE_AUTH_HTTPS_PORT:-8080}:8080"
+      - "${LORE_AUTH_GRPC_PORT:-50051}:50051"
+    environment:
+      # Derive the public URL, JWT issuer, and Lore Server settings from one host value.
+      PUBLIC_BASE_URL: "https://${LORE_EXTERNAL_HOST:-192.168.1.2}:${LORE_AUTH_HTTPS_PORT:-8080}"
+      JWT_ISSUER: "https://${LORE_EXTERNAL_HOST:-192.168.1.2}:${LORE_AUTH_HTTPS_PORT:-8080}"
+      JWT_AUDIENCE: "${LORE_EXTERNAL_HOST:-192.168.1.2}"
+      LORE_ENVIRONMENT: "${LORE_ENVIRONMENT:-local}"
+      TLS_CERT_FILE: "/run/lore-stack/fullchain.pem"
+      TLS_KEY_FILE: "/run/lore-stack/privkey.pem"
+      NODE_EXTRA_CA_CERTS: "/run/lore-stack/ca.pem"
+      HEALTHCHECK_URL: "https://${LORE_EXTERNAL_HOST:-192.168.1.2}:${LORE_AUTH_HTTPS_PORT:-8080}/health_check"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"
+      TOKEN_TTL: "${TOKEN_TTL:-43200}"
+      REFRESH_TOKEN_TTL: "${REFRESH_TOKEN_TTL:-604800}"
+      AUTH_SESSION_TTL: "${AUTH_SESSION_TTL:-300}"
+    volumes:
+      - lore-auth-keys:/app/keys
+      - lore-auth-data:/app/data
+      - lore-stack-config:/run/lore-stack:ro
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch(process.env.HEALTHCHECK_URL).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 12
+
+  lore-server:
+    # GitHub Actions builds this precompiled image from Epic Games' official Lore source.
+    image: "${LORE_SERVER_IMAGE:-ghcr.io/arnochenfx/lore-server:latest}"
+    platform: "${LORE_SERVER_PLATFORM:-linux/amd64}"
+    container_name: lore-server
+    restart: unless-stopped
+    depends_on:
+      lore-stack-init:
+        condition: service_completed_successfully
+      lore-auth:
+        condition: service_healthy
+    ports:
+      # The same port number carries TCP gRPC and UDP QUIC; publish both protocols.
+      - "${LORE_SERVER_PORT:-41337}:41337/tcp"
+      - "${LORE_SERVER_PORT:-41337}:41337/udp"
+      - "${LORE_SERVER_HTTP_PORT:-41339}:41339/tcp"
+    environment:
+      LORE_CONFIG_PATH: "/run/lore-stack/config"
+      LORE_ENV: "local"
+    volumes:
+      - lore-server-data:/data
+      - lore-stack-config:/run/lore-stack:ro
+    # The official runtime image starts as root, allowing the shared CA to be trusted first.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "cp /run/lore-stack/ca.pem /usr/local/share/ca-certificates/lore-stack.crt && update-ca-certificates >/dev/null && exec loreserver"
+volumes:
+  lore-stack-config:
+  lore-auth-keys:
+  lore-auth-data:
+  lore-server-data:
