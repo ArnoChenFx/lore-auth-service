@@ -1,6 +1,6 @@
 {
   "name": "lore-auth",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Native browser authentication, JWT authorization, JWKS, and ReBAC service for Lore VCS",
   "type": "module",
   "scripts": {
