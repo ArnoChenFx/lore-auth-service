@@ -1,5 +1,5 @@
-# 此文件展示用户维护的 Lore Server 最终覆盖层。
-# 复制为 local.toml 后，Lore Server 会在 stack.toml 之后加载它。
+# Example of the final user-maintained Lore Server override layer.
+# Copy this file to local.toml; Lore Server loads it after stack.toml.
 
 [telemetry.logger]
 format = "text"

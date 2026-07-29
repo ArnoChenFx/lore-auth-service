@@ -1,4 +1,4 @@
-# 仅用于在共享卷中准备证书和 Lore Server 配置，完成后容器立即退出。
+# Prepare certificates and Lore Server settings in shared storage, then exit immediately.
 FROM alpine:3.22
 
 RUN apk add --no-cache openssl

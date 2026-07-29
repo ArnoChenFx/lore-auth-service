@@ -1,27 +1,27 @@
 #!/bin/sh
-# 为 Lore Server 与 Lore Auth 准备同一套 TLS 材料，并生成两端严格匹配的配置。
+# Prepare shared TLS material and matching integration settings for Lore Server and Lore Auth.
 set -eu
 
 output_dir=/output
 input_dir=/input
-external_host=${LORE_EXTERNAL_HOST:?必须设置 LORE_EXTERNAL_HOST}
+external_host=${LORE_EXTERNAL_HOST:?LORE_EXTERNAL_HOST is required}
 tls_mode=${LORE_TLS_MODE:-auto}
 valid_days=${LORE_TLS_VALID_DAYS:-825}
 auth_https_port=${LORE_AUTH_HTTPS_PORT:-8080}
 auth_grpc_port=${LORE_AUTH_GRPC_PORT:-50051}
 
-# 防止主机名被插入 OpenSSL 配置或 TOML。当前公开 URL 采用 host:port 形式，
-# 因此明确支持 DNS 与 IPv4；IPv6 字面量需要额外的方括号规范化，暂不接受。
+# Prevent host values from injecting OpenSSL or TOML syntax. Public URLs use host:port,
+# so DNS names and IPv4 are supported; IPv6 literals require bracket normalization and are rejected.
 case "$external_host" in
   *[!A-Za-z0-9._-]*|*:*|'')
-    echo "LORE_EXTERNAL_HOST 含有不支持的字符: $external_host" >&2
+    echo "LORE_EXTERNAL_HOST contains unsupported characters: $external_host" >&2
     exit 1
     ;;
 esac
 
 case "$valid_days" in
   *[!0-9]*|'0'|'')
-    echo "LORE_TLS_VALID_DAYS 必须是正整数" >&2
+    echo "LORE_TLS_VALID_DAYS must be a positive integer" >&2
     exit 1
     ;;
 esac
@@ -34,7 +34,7 @@ if [ "$tls_mode" = "custom" ]; then
   ca_name=${LORE_TLS_CA_FILE:-ca.pem}
   for source_name in "$cert_name" "$key_name" "$ca_name"; do
     if [ ! -f "$input_dir/$source_name" ]; then
-      echo "自定义证书文件不存在: $input_dir/$source_name" >&2
+      echo "Custom certificate file does not exist: $input_dir/$source_name" >&2
       exit 1
     fi
   done
@@ -42,7 +42,7 @@ if [ "$tls_mode" = "custom" ]; then
   cp "$input_dir/$key_name" "$output_dir/privkey.pem"
   cp "$input_dir/$ca_name" "$output_dir/ca.pem"
 elif [ "$tls_mode" = "auto" ]; then
-  # 主机变化时重新签发；主机不变则复用证书，避免重启后客户端突然失去信任。
+  # Reissue certificates when the host changes; otherwise reuse them to preserve client trust.
   if [ ! -s "$output_dir/ca.pem" ] || [ ! -s "$output_dir/privkey.pem" ] || \
      [ ! -s "$output_dir/fullchain.pem" ] || [ ! -f "$output_dir/.certificate-host" ] || \
      [ "$(cat "$output_dir/.certificate-host")" != "$external_host" ]; then
@@ -55,7 +55,7 @@ elif [ "$tls_mode" = "auto" ]; then
       -addext "basicConstraints=critical,CA:TRUE" \
       -addext "keyUsage=critical,keyCertSign,cRLSign"
 
-    # IP 地址必须写入 IP SAN，DNS 名称则写入 DNS SAN，否则现代 TLS 客户端会拒绝证书。
+    # Encode IP addresses as IP SANs and hostnames as DNS SANs for modern TLS verification.
     case "$external_host" in
       *:*) external_san="IP.1 = $external_host" ;;
       *[!0-9.]*) external_san="DNS.1 = $external_host" ;;
@@ -94,32 +94,32 @@ EOF
       -extensions req_ext -extfile "$output_dir/openssl-san.cnf"
     cat "$output_dir/server.pem" "$output_dir/ca.pem" > "$output_dir/fullchain.pem"
     printf '%s' "$external_host" > "$output_dir/.certificate-host"
-    # CA 私钥在完成签发后立即删除，减少共享运行卷中长期保存的高权限秘密。
+    # Delete the CA private key immediately after signing to avoid retaining a high-value secret.
     rm -f "$output_dir/server.csr" "$output_dir/openssl-san.cnf" \
       "$output_dir/ca.srl" "$output_dir/ca-key.pem"
   fi
 else
-  echo "LORE_TLS_MODE 只能是 auto 或 custom" >&2
+  echo "LORE_TLS_MODE must be either auto or custom" >&2
   exit 1
 fi
 
-# 确认证书与私钥匹配，尽早阻止错误的自定义证书进入两个服务。
+# Verify the certificate and private key match before either service starts.
 cert_pubkey=$(openssl x509 -in "$output_dir/fullchain.pem" -pubkey -noout | openssl sha256)
 key_pubkey=$(openssl pkey -in "$output_dir/privkey.pem" -pubout | openssl sha256)
 if [ "$cert_pubkey" != "$key_pubkey" ]; then
-  echo "证书与私钥不匹配" >&2
+  echo "The certificate and private key do not match" >&2
   exit 1
 fi
 
-# 自定义证书也必须覆盖对外 IP/DNS；否则 Compose 虽能启动，客户端 TLS 一定会失败。
+# Custom certificates must cover the public IP or DNS name used by clients.
 case "$external_host" in
   *[!0-9.]*) openssl x509 -in "$output_dir/fullchain.pem" -noout -checkhost "$external_host" >/dev/null ;;
   *) openssl x509 -in "$output_dir/fullchain.pem" -noout -checkip "$external_host" >/dev/null ;;
 esac
 
-# Lore Server 与健康检查都通过用户填写的外部地址访问 Auth，因此自定义公网或内网
-# 证书不需要额外包含 Compose 的内部服务名。
-# 初始化器只管理 stack.toml；同目录下的 local.toml 完全由用户自行维护。
+# Lore Server and health checks reach Auth through the configured public address, so custom
+# certificates do not need Compose-internal service names. Only stack.toml is managed here;
+# local.toml in the same directory remains entirely user-maintained.
 cat > "$output_dir/config/stack.toml" <<EOF
 [server.quic.certificate]
 cert_file = "/run/lore-stack/fullchain.pem"
@@ -146,10 +146,10 @@ path = "/data"
 path = "/data"
 EOF
 
-# Auth 镜像会降权到 UID 1001，Lore Server 则保持 root；私钥只授权给前者，后者仍可读取。
+# Lore Auth drops to UID 1001 while Lore Server remains root; grant the key only to that UID.
 chown 1001:1001 "$output_dir/privkey.pem"
 chmod 600 "$output_dir/privkey.pem"
 chmod 644 "$output_dir/ca.pem" "$output_dir/fullchain.pem"
 chmod 644 "$output_dir/config/stack.toml"
 
-echo "Lore Stack 配置已生成，外部主机: $external_host，TLS 模式: $tls_mode"
+echo "Lore Stack settings generated; external host: $external_host; TLS mode: $tls_mode"
