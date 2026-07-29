@@ -27,7 +27,8 @@ services:
       PUBLIC_BASE_URL: "http://localhost:8080"
       GRPC_PORT: "50051"
       LORE_ENVIRONMENT: "local"
-      TOKEN_TTL: "43200"
+      # Access tokens remain valid for 10 days by default.
+      TOKEN_TTL: "864000"
       REFRESH_TOKEN_TTL: "604800"
       AUTH_SESSION_TTL: "300"
       HEALTHCHECK_URL: "http://localhost:8080/health_check"

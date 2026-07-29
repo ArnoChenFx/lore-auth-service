@@ -410,7 +410,7 @@ Both services use the definitions in `proto/`:
 | `JWT_ISSUER` | `http://localhost:8080` | JWT `iss` |
 | `JWT_AUDIENCE` | `localhost` | Comma-separated JWT audiences |
 | `LORE_ENVIRONMENT` | `local` | JWT `env` claim |
-| `TOKEN_TTL` | `43200` | JWT lifetime in seconds |
+| `TOKEN_TTL` | `864000` | JWT lifetime in seconds (10 days by default) |
 | `REFRESH_TOKEN_TTL` | `604800` | REST refresh-token lifetime |
 | `AUTH_SESSION_TTL` | `300` | Browser session lifetime |
 | `AUTH_SESSION_MAX_ATTEMPTS` | `5` | Failed logins before a temporary lock |

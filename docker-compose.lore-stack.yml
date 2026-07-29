@@ -61,7 +61,8 @@ services:
       HEALTHCHECK_URL: "https://${LORE_EXTERNAL_HOST:-192.168.1.2}:${LORE_AUTH_HTTPS_PORT:-8080}/health_check"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-changeme}"
-      TOKEN_TTL: "${TOKEN_TTL:-43200}"
+      # Access tokens remain valid for 10 days unless the deployment overrides this value.
+      TOKEN_TTL: "${TOKEN_TTL:-864000}"
       REFRESH_TOKEN_TTL: "${REFRESH_TOKEN_TTL:-604800}"
       AUTH_SESSION_TTL: "${AUTH_SESSION_TTL:-300}"
     volumes:

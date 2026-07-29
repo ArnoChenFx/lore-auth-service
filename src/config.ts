@@ -87,7 +87,8 @@ export function loadConfig(): AppConfig {
     audience: envList("JWT_AUDIENCE", ["localhost"]),
     publicBaseUrl: env("PUBLIC_BASE_URL", issuer).replace(/\/+$/, ""),
     environment: env("LORE_ENVIRONMENT", "local"),
-    tokenTtl: envInt("TOKEN_TTL", 43200),
+    // 默认保持登录 10 天；部署方仍可通过 TOKEN_TTL 按需缩短或延长。
+    tokenTtl: envInt("TOKEN_TTL", 10 * 24 * 60 * 60),
     refreshTokenTtl: envInt("REFRESH_TOKEN_TTL", 7 * 24 * 60 * 60),
     // Lore 当前最多轮询 150 秒，默认 5 分钟为浏览器操作留出余量。
     authSessionTtl: envInt("AUTH_SESSION_TTL", 300),

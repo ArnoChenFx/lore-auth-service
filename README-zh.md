@@ -459,7 +459,7 @@ services:
 | `JWT_ISSUER` | `http://localhost:8080` | JWT `iss` |
 | `JWT_AUDIENCE` | `localhost` | 逗号分隔的 JWT 受众 |
 | `LORE_ENVIRONMENT` | `local` | JWT `env` Claim |
-| `TOKEN_TTL` | `43200` | JWT 有效期（秒） |
+| `TOKEN_TTL` | `864000` | JWT 有效期（秒，默认 10 天） |
 | `REFRESH_TOKEN_TTL` | `604800` | REST Refresh Token 有效期 |
 | `AUTH_SESSION_TTL` | `300` | 浏览器会话有效期 |
 | `AUTH_SESSION_MAX_ATTEMPTS` | `5` | 临时锁定前的失败次数 |
