@@ -1,10 +1,12 @@
-# ── Manual Lore Server Docker image publishing workflow ──
-# Check out a selected revision from Epic Games' official Lore repository,
-# then build with the upstream Dockerfile and publish the image to GHCR.
+# ── Lore Server Docker image publishing workflow ──
+# Manual runs build a selected upstream revision; daily runs publish only when upstream main has changed.
 
 name: Lore Server Docker Publish
 
 on:
+  # Check upstream main for new commits every day at 03:17 UTC.
+  schedule:
+    - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       lore_ref:
@@ -33,7 +35,7 @@ env:
 
 concurrency:
   # Serialize publications of the same tag so an older run cannot overwrite a newer manifest.
-  group: lore-server-docker-${{ inputs.image_tag }}
+  group: lore-server-docker-${{ inputs.image_tag || 'latest' }}
   cancel-in-progress: false
 
 jobs:
@@ -53,7 +55,8 @@ jobs:
         shell: bash
         env:
           # Pass user input through the environment instead of interpolating it into shell code.
-          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+          # Scheduled runs have no manual inputs, so publish the latest tag by default.
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
         run: |
           if [[ ! "$INPUT_IMAGE_TAG" =~ ^[a-z0-9_][a-z0-9._-]{0,127}$ ]]; then
             echo "The image tag may contain only lowercase letters, digits, dots, underscores, and hyphens."
@@ -65,7 +68,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: EpicGames/lore
-          ref: ${{ inputs.lore_ref }}
+          # Scheduled runs check upstream main; manual runs may select a branch, tag, or commit.
+          ref: ${{ inputs.lore_ref || 'main' }}
           path: lore-source
           fetch-depth: 1
           persist-credentials: false
@@ -82,14 +86,7 @@ jobs:
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
           echo "Building Lore commit: $full_sha"
 
-      # 4. Prepare QEMU and Docker Buildx for cross-platform builds.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # 5. Log in to GitHub Container Registry with the workflow's short-lived token.
+      # 4. Log in to GitHub Container Registry with the workflow's short-lived token.
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
@@ -97,30 +94,63 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 6. Generate the requested tag, source revision tag, and semantic-version aliases.
+      # 5. Scheduled runs build only when the upstream commit lacks its immutable sha tag; manual runs always build.
+      - name: Check whether the upstream revision is already published
+        id: publication
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SOURCE_SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+        run: |
+          should_publish=true
+
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            immutable_image="${IMAGE_NAME}:sha-${SOURCE_SHORT_SHA}"
+            if docker manifest inspect "$immutable_image" > /dev/null 2>&1; then
+              should_publish=false
+              echo "The upstream revision is already published as $immutable_image; skipping the daily build."
+            else
+              echo "The upstream revision is not published as $immutable_image; starting the daily build."
+            fi
+          fi
+
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+
+      # 6. Prepare QEMU and Docker Buildx for cross-platform builds.
+      - name: Set up QEMU
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      # 7. Generate the requested tag, source revision tag, and semantic-version aliases.
       - name: Generate Docker metadata
         id: meta
+        if: steps.publication.outputs.should_publish == 'true'
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ inputs.image_tag }}
+            type=raw,value=${{ inputs.image_tag || 'latest' }}
             type=raw,value=sha-${{ steps.source.outputs.short_sha }}
-            type=semver,pattern={{version}},value=${{ inputs.image_tag }},enable=${{ startsWith(inputs.image_tag, 'v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.image_tag }},enable=${{ startsWith(inputs.image_tag, 'v') }}
-            type=semver,pattern={{major}},value=${{ inputs.image_tag }},enable=${{ startsWith(inputs.image_tag, 'v') }}
+            type=semver,pattern={{version}},value=${{ inputs.image_tag || 'latest' }},enable=${{ startsWith(inputs.image_tag || 'latest', 'v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.image_tag || 'latest' }},enable=${{ startsWith(inputs.image_tag || 'latest', 'v') }}
+            type=semver,pattern={{major}},value=${{ inputs.image_tag || 'latest' }},enable=${{ startsWith(inputs.image_tag || 'latest', 'v') }}
           labels: |
             org.opencontainers.image.source=https://github.com/EpicGames/lore
             org.opencontainers.image.revision=${{ steps.source.outputs.full_sha }}
 
-      # 7. Build selected platforms with Lore's official Dockerfile and push the image and cache.
+      # 8. Build selected platforms with Lore's official Dockerfile and push the image and cache.
       - name: Build and push image
+        if: steps.publication.outputs.should_publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./lore-source
           file: ./lore-source/lore-server/Dockerfile
           push: true
-          platforms: ${{ inputs.platforms }}
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=lore-server
