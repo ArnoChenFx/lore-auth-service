@@ -11,3 +11,4 @@ dist/
 # Bun Compile 在 Windows 产物被短暂锁定时可能遗留的临时可执行文件。
 .*.bun-build
 AUTH_INTEGRATION.md
+graphify-out
