@@ -62,7 +62,7 @@ curl http://localhost:8080/health_check
 curl http://localhost:8080/.well-known/jwks.json
 ```
 
-打开 `http://localhost:8080/admin` 可管理用户、登记启用认证前已经存在的仓库，并分配仓库权限。管理页面与浏览器认证页默认使用英文，并支持切换中文；管理页面同时支持亮色与暗色模式。语言和主题选择都会保存在当前浏览器中。
+打开 `http://localhost:8080/admin` 可管理用户、登记启用认证前已经存在的仓库，并分配仓库权限。
 
 默认 gRPC 是明文端点，仅用于自动化测试和本地 API 开发。当前 Lore 客户端会把认证端点转换为 HTTPS，因此真实桌面登录必须使用下面的生产 TLS 配置。
 

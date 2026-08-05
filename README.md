@@ -62,7 +62,7 @@ curl http://localhost:8080/health_check
 curl http://localhost:8080/.well-known/jwks.json
 ```
 
-Open `http://localhost:8080/admin` to manage users, register repositories created before authentication was enabled, and assign repository access. The administration and browser authentication pages use English by default and can be switched to Chinese. The administration page also supports light and dark themes. Language and theme preferences are saved in the current browser.
+Open `http://localhost:8080/admin` to manage users, register repositories created before authentication was enabled, and assign repository access.
 
 The default gRPC endpoint is insecure and intended only for automated tests and local API development. The current Lore client converts its auth endpoint to HTTPS, so a real desktop login requires the production TLS setup below.
 
