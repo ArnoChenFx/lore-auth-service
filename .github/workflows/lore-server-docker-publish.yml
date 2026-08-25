@@ -1,10 +1,14 @@
 # ── Lore Server Docker image publishing workflow ──
-# Manual runs build a selected upstream revision; daily runs publish only when upstream main has changed.
+# Scheduled tasks:
+#   - Daily at 03:17 UTC, build the upstream EpicGames/lore main branch as nightly + latest + sha-xxx (skip if sha tag already exists in GHCR)
+#   - Daily at 03:17 UTC, check upstream for a new stable Release (e.g., v0.8.6, excluding draft/prerelease); if GHCR does not yet have the version tag, build and push stable + v0.8.6 + semver aliases + sha-xxx
+# Manual trigger:
+#   - Keep the original workflow_dispatch: any lore_ref and image_tag can be specified and built with the original logic
 
 name: Lore Server Docker Publish
 
 on:
-  # Check upstream main for new commits every day at 03:17 UTC.
+  # Check upstream daily at 03:17 UTC.
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
@@ -33,48 +37,42 @@ env:
   # GitHub Container Registry requires a lowercase image owner and repository name.
   IMAGE_NAME: ghcr.io/arnochenfx/lore-server
 
-concurrency:
-  # Serialize publications of the same tag so an older run cannot overwrite a newer manifest.
-  group: lore-server-docker-${{ inputs.image_tag || 'latest' }}
-  cancel-in-progress: false
-
 jobs:
-  build-and-push:
-    name: Build and publish Lore Server image
+  # ═══════════════════════════════════════════════════════════════
+  # Manual build: fully compatible with the original logic, always builds
+  # ═══════════════════════════════════════════════════════════════
+  build-manual:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: Manual build
     runs-on: ubuntu-latest
-
+    concurrency:
+      # Serialize by input tag to prevent older runs from overwriting newer manifests.
+      group: lore-server-docker-${{ inputs.image_tag }}
+      cancel-in-progress: false
     permissions:
-      # Read the public upstream source and write packages to the current account's GHCR.
       contents: read
       packages: write
       id-token: write
-
     steps:
-      # 1. Validate the tag before passing it to Docker metadata and GHCR.
       - name: Validate publishing inputs
         shell: bash
         env:
-          # Pass user input through the environment instead of interpolating it into shell code.
-          # Scheduled runs have no manual inputs, so publish the latest tag by default.
-          INPUT_IMAGE_TAG: ${{ inputs.image_tag || 'latest' }}
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           if [[ ! "$INPUT_IMAGE_TAG" =~ ^[a-z0-9_][a-z0-9._-]{0,127}$ ]]; then
             echo "The image tag may contain only lowercase letters, digits, dots, underscores, and hyphens."
             exit 1
           fi
 
-      # 2. Check out the selected Lore branch, tag, or commit into an isolated directory.
       - name: Check out Epic Games Lore source
         uses: actions/checkout@v4
         with:
           repository: EpicGames/lore
-          # Scheduled runs check upstream main; manual runs may select a branch, tag, or commit.
-          ref: ${{ inputs.lore_ref || 'main' }}
+          ref: ${{ inputs.lore_ref }}
           path: lore-source
           fetch-depth: 1
           persist-credentials: false
 
-      # 3. Resolve the exact commit and publish an immutable sha-* tag for traceability.
       - name: Resolve Lore source revision
         id: source
         shell: bash
@@ -84,9 +82,8 @@ jobs:
           short_sha=$(git rev-parse --short=12 HEAD)
           echo "full_sha=$full_sha" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
-          echo "Building Lore commit: $full_sha"
+          echo "Building Lore commit: $full_sha (ref: ${{ inputs.lore_ref }})"
 
-      # 4. Log in to GitHub Container Registry with the workflow's short-lived token.
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
@@ -94,29 +91,99 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 5. Scheduled runs build only when the upstream commit lacks its immutable sha tag; manual runs always build.
-      - name: Check whether the upstream revision is already published
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ inputs.image_tag }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }}
+            type=semver,pattern={{version}},value=${{ inputs.image_tag }},enable=${{ startsWith(inputs.image_tag, 'v') }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.image_tag }},enable=${{ startsWith(inputs.image_tag, 'v') }}
+            type=semver,pattern={{major}},value=${{ inputs.image_tag }},enable=${{ startsWith(inputs.image_tag, 'v') }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/EpicGames/lore
+            org.opencontainers.image.revision=${{ steps.source.outputs.full_sha }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lore-source
+          file: ./lore-source/lore-server/Dockerfile
+          push: true
+          platforms: ${{ inputs.platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=lore-server
+          cache-to: type=gha,mode=max,scope=lore-server
+
+  # ═══════════════════════════════════════════════════════════════
+  # Daily nightly: tracks the latest commit on upstream main
+  # Tags: nightly + latest + sha-<short> (latest tracks nightly)
+  # Deduplication: skip if sha-xxx already exists in GHCR
+  # ═══════════════════════════════════════════════════════════════
+  build-nightly:
+    if: ${{ github.event_name == 'schedule' }}
+    name: Nightly build (main → nightly)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: lore-server-docker-nightly
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Check out Epic Games Lore source (main)
+        uses: actions/checkout@v4
+        with:
+          repository: EpicGames/lore
+          ref: main
+          path: lore-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve Lore source revision
+        id: source
+        shell: bash
+        working-directory: lore-source
+        run: |
+          full_sha=$(git rev-parse HEAD)
+          short_sha=$(git rev-parse --short=12 HEAD)
+          echo "full_sha=$full_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "Upstream main HEAD: $full_sha"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether nightly revision is already published
         id: publication
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
           SOURCE_SHORT_SHA: ${{ steps.source.outputs.short_sha }}
         run: |
-          should_publish=true
-
-          if [[ "$EVENT_NAME" == "schedule" ]]; then
-            immutable_image="${IMAGE_NAME}:sha-${SOURCE_SHORT_SHA}"
-            if docker manifest inspect "$immutable_image" > /dev/null 2>&1; then
-              should_publish=false
-              echo "The upstream revision is already published as $immutable_image; skipping the daily build."
-            else
-              echo "The upstream revision is not published as $immutable_image; starting the daily build."
-            fi
+          set -euo pipefail
+          immutable_image="${IMAGE_NAME}:sha-${SOURCE_SHORT_SHA}"
+          if docker manifest inspect "$immutable_image" > /dev/null 2>&1; then
+            echo "Upstream commit already published as $immutable_image; skipping nightly build."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream commit not yet published as $immutable_image; starting nightly build."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
-
-      # 6. Prepare QEMU and Docker Buildx for cross-platform builds.
       - name: Set up QEMU
         if: steps.publication.outputs.should_publish == 'true'
         uses: docker/setup-qemu-action@v3
@@ -125,33 +192,194 @@ jobs:
         if: steps.publication.outputs.should_publish == 'true'
         uses: docker/setup-buildx-action@v3
 
-      # 7. Generate the requested tag, source revision tag, and semantic-version aliases.
-      - name: Generate Docker metadata
+      - name: Generate Docker metadata (nightly)
         id: meta
         if: steps.publication.outputs.should_publish == 'true'
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          # Daily builds are always tagged as nightly and latest, plus an immutable sha tag for traceability.
           tags: |
-            type=raw,value=${{ inputs.image_tag || 'latest' }}
+            type=raw,value=nightly
+            type=raw,value=latest
             type=raw,value=sha-${{ steps.source.outputs.short_sha }}
-            type=semver,pattern={{version}},value=${{ inputs.image_tag || 'latest' }},enable=${{ startsWith(inputs.image_tag || 'latest', 'v') }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.image_tag || 'latest' }},enable=${{ startsWith(inputs.image_tag || 'latest', 'v') }}
-            type=semver,pattern={{major}},value=${{ inputs.image_tag || 'latest' }},enable=${{ startsWith(inputs.image_tag || 'latest', 'v') }}
           labels: |
             org.opencontainers.image.source=https://github.com/EpicGames/lore
             org.opencontainers.image.revision=${{ steps.source.outputs.full_sha }}
 
-      # 8. Build selected platforms with Lore's official Dockerfile and push the image and cache.
-      - name: Build and push image
+      - name: Build and push nightly image
         if: steps.publication.outputs.should_publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./lore-source
           file: ./lore-source/lore-server/Dockerfile
           push: true
-          platforms: ${{ inputs.platforms || 'linux/amd64' }}
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=lore-server
-          cache-to: type=gha,mode=max,scope=lore-server
+          cache-from: type=gha,scope=lore-server-nightly
+          cache-to: type=gha,mode=max,scope=lore-server-nightly
+
+  # ═══════════════════════════════════════════════════════════════
+  # Auto stable: detects the latest upstream stable Release
+  # Tags: stable + v0.8.6 + semver aliases (0.8.6/0.8/0) + sha-xxx
+  # Deduplication: skip if GHCR already has the v0.8.6 tag
+  # Logic: call /releases/latest (excludes draft/prerelease),
+  #        fallback to scanning /releases list for the latest non-prerelease if needed
+  # ═══════════════════════════════════════════════════════════════
+  build-stable:
+    if: ${{ github.event_name == 'schedule' }}
+    name: Stable build (release → stable + version)
+    runs-on: ubuntu-latest
+    concurrency:
+      group: lore-server-docker-stable
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - name: Resolve latest stable release
+        id: release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "Querying upstream for the latest stable Release..."
+          api_latest="https://api.github.com/repos/EpicGames/lore/releases/latest"
+          api_list="https://api.github.com/repos/EpicGames/lore/releases?per_page=20"
+
+          # Prefer /releases/latest (GitHub automatically excludes draft/prerelease).
+          response=$(curl -sk -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$api_latest" || true)
+          tag=$(echo "$response" | jq -r '.tag_name // empty' 2>/dev/null || true)
+          prerelease=$(echo "$response" | jq -r '.prerelease // empty' 2>/dev/null || true)
+          draft=$(echo "$response" | jq -r '.draft // empty' 2>/dev/null || true)
+          message=$(echo "$response" | jq -r '.message // empty' 2>/dev/null || true)
+
+          # Fallback to list query if /latest returns no valid tag (e.g., API rate limit or no stable release).
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            echo "/releases/latest returned no valid tag (message: $message); scanning /releases list..."
+            list_response=$(curl -sk -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" "$api_list" || true)
+            tag=$(echo "$list_response" | jq -r '[.[] | select(.draft==false and .prerelease==false)] | sort_by(.published_at) | last | .tag_name // empty' 2>/dev/null || true)
+            if [[ -n "$tag" && "$tag" != "null" ]]; then
+              echo "Found latest stable release via list query: $tag"
+              prerelease="false"
+              draft="false"
+            fi
+          else
+            echo "Found via /releases/latest: $tag (prerelease=$prerelease, draft=$draft)"
+          fi
+
+          if [[ -z "$tag" || "$tag" == "null" ]]; then
+            echo "No stable Release found; skipping stable build."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Stable releases must match vX.Y.Z (e.g., v0.8.6).
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Latest tag $tag does not match vX.Y.Z; skipping stable build."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Detected latest stable upstream release: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether stable release is already published
+        id: publication
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          SKIP_RELEASE: ${{ steps.release.outputs.skip }}
+        run: |
+          set -euo pipefail
+          if [[ "$SKIP_RELEASE" == "true" ]]; then
+            echo "No valid Release; skipping."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Use the version tag as the deduplication key (e.g., v0.8.6).
+          target_image="${IMAGE_NAME}:${RELEASE_TAG}"
+          if docker manifest inspect "$target_image" > /dev/null 2>&1; then
+            echo "Upstream stable release $RELEASE_TAG already published as $target_image; skipping stable build."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream stable release $RELEASE_TAG not yet published; preparing stable build."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out Epic Games Lore source (release tag)
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: EpicGames/lore
+          ref: ${{ steps.release.outputs.tag }}
+          path: lore-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve Lore source revision
+        id: source
+        if: steps.publication.outputs.should_publish == 'true'
+        shell: bash
+        working-directory: lore-source
+        run: |
+          full_sha=$(git rev-parse HEAD)
+          short_sha=$(git rev-parse --short=12 HEAD)
+          echo "full_sha=$full_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "Upstream stable release ${{ steps.release.outputs.tag }} commit: $full_sha"
+
+      - name: Set up QEMU
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate Docker metadata (stable)
+        id: meta
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # Stable releases are published with:
+          #   stable          -> always points to the latest stable release (convenient for tracking)
+          #   v0.8.6          -> full version synced with the upstream tag
+          #   0.8.6 / 0.8 / 0 -> semver aliases without the v prefix (for different reference conventions)
+          #   sha-xxx         -> immutable commit tag for traceability
+          tags: |
+            type=raw,value=stable
+            type=raw,value=${{ steps.release.outputs.tag }}
+            type=raw,value=sha-${{ steps.source.outputs.short_sha }}
+            type=semver,pattern={{version}},value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ steps.release.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/EpicGames/lore
+            org.opencontainers.image.revision=${{ steps.source.outputs.full_sha }}
+
+      - name: Build and push stable image
+        if: steps.publication.outputs.should_publish == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./lore-source
+          file: ./lore-source/lore-server/Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=lore-server-stable
+          cache-to: type=gha,mode=max,scope=lore-server-stable
