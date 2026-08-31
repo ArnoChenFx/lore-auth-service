@@ -168,20 +168,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Dedup check via the GHCR Registry API with explicit HTTP status handling.
+      # Do NOT rely on `docker manifest inspect` exit codes: in the scheduled run
+      # of 2026-08-30 it returned 0 even though the tag did not exist (GHCR
+      # replied 404 MANIFEST_UNKNOWN), so the nightly build was wrongly treated
+      # as "already published" and silently skipped. Semantics: 200 = published,
+      # 404 = not published, anything else (5xx/401/429, ...) fails the job
+      # instead of silently skipping.
       - name: Check whether nightly revision is already published
         id: publication
         shell: bash
         env:
           SOURCE_SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          immutable_image="${IMAGE_NAME}:sha-${SOURCE_SHORT_SHA}"
-          if docker manifest inspect "$immutable_image" > /dev/null 2>&1; then
+          repo="${IMAGE_NAME#ghcr.io/}"           # e.g. arnochenfx/lore-server
+          target_tag="sha-${SOURCE_SHORT_SHA}"
+
+          # Exchange the repository GITHUB_TOKEN for a GHCR pull token
+          # (packages: write includes read). Still works if the package is
+          # made private later; a token request failure exits non-zero.
+          token=$(curl -sSf --retry 3 --retry-delay 2 \
+            -u "${GITHUB_REPOSITORY_OWNER}:${GITHUB_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" \
+            | jq -r '.token')
+
+          # Query the manifest and judge only by the HTTP status code,
+          # never by any CLI exit code.
+          code=$(curl -sS --retry 3 --retry-delay 2 -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${repo}/manifests/${target_tag}")
+
+          immutable_image="${IMAGE_NAME}:${target_tag}"
+          if [[ "$code" == "200" ]]; then
             echo "Upstream commit already published as $immutable_image; skipping nightly build."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "$code" == "404" ]]; then
             echo "Upstream commit not yet published as $immutable_image; starting nightly build."
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unexpected HTTP status $code while checking $immutable_image; failing instead of guessing." >&2
+            exit 1
           fi
 
       - name: Set up QEMU
@@ -296,12 +325,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Same dedup strategy as the nightly job: GHCR Registry API with explicit
+      # HTTP status handling; do not rely on docker manifest inspect exit codes
+      # (see the comment in the nightly job).
       - name: Check whether stable release is already published
         id: publication
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           SKIP_RELEASE: ${{ steps.release.outputs.skip }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [[ "$SKIP_RELEASE" == "true" ]]; then
@@ -310,13 +343,28 @@ jobs:
             exit 0
           fi
           # Use the version tag as the deduplication key (e.g., v0.8.6).
+          repo="${IMAGE_NAME#ghcr.io/}"
+
+          token=$(curl -sSf --retry 3 --retry-delay 2 \
+            -u "${GITHUB_REPOSITORY_OWNER}:${GITHUB_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" \
+            | jq -r '.token')
+
+          code=$(curl -sS --retry 3 --retry-delay 2 -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${token}" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${repo}/manifests/${RELEASE_TAG}")
+
           target_image="${IMAGE_NAME}:${RELEASE_TAG}"
-          if docker manifest inspect "$target_image" > /dev/null 2>&1; then
+          if [[ "$code" == "200" ]]; then
             echo "Upstream stable release $RELEASE_TAG already published as $target_image; skipping stable build."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          else
+          elif [[ "$code" == "404" ]]; then
             echo "Upstream stable release $RELEASE_TAG not yet published; preparing stable build."
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unexpected HTTP status $code while checking $target_image; failing instead of guessing." >&2
+            exit 1
           fi
 
       - name: Check out Epic Games Lore source (release tag)
