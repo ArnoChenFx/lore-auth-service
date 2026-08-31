@@ -5,7 +5,10 @@
 # Prebuilt application images are available from GitHub Container Registry:
 #   ghcr.io/arnochenfx/lore-stack-init:latest
 #   ghcr.io/arnochenfx/lore-auth-service:latest
-#   ghcr.io/arnochenfx/lore-server:latest
+#   ghcr.io/arnochenfx/lore-server:latest   (manual or daily main)
+#   ghcr.io/arnochenfx/lore-server:nightly  (daily main)
+#   ghcr.io/arnochenfx/lore-server:stable   (latest stable release, e.g. v0.8.6)
+#   ghcr.io/arnochenfx/lore-server:v0.8.6   (synced upstream release tag) + sha-xxx
 # Override LORE_STACK_INIT_IMAGE, LORE_AUTH_IMAGE, or LORE_SERVER_IMAGE in
 # .env.lore-stack to pin another tag, such as lore-server:sha-0123456789ab.
 # To run only prebuilt images without compiling anything locally:
@@ -78,7 +81,7 @@ services:
 
   lore-server:
     # GitHub Actions builds this precompiled image from Epic Games' official Lore source.
-    image: "${LORE_SERVER_IMAGE:-ghcr.io/arnochenfx/lore-server:latest}"
+    image: "${LORE_SERVER_IMAGE:-ghcr.io/arnochenfx/lore-server:stable}"
     platform: "${LORE_SERVER_PLATFORM:-linux/amd64}"
     container_name: lore-server
     restart: unless-stopped

@@ -322,7 +322,7 @@ cp .env.lore-stack.example .env.lore-stack
 docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml up -d --build
 ```
 
-默认 `LORE_TLS_MODE=auto`：初始化容器会创建持久化本地 CA，并签发覆盖外部 IP、`lore-auth`、`lore-server`、`localhost` 的证书。证书保存在 Docker 命名卷中，普通重启不会轮换。Lore Server 默认拉取 `ghcr.io/arnochenfx/lore-server:latest`，该镜像由仓库中的手动 GitHub Actions 工作流从 Epic Games 官方源码构建。
+默认 `LORE_TLS_MODE=auto`：初始化容器会创建持久化本地 CA，并签发覆盖外部 IP、`lore-auth`、`lore-server`、`localhost` 的证书。证书保存在 Docker 命名卷中，普通重启不会轮换。Lore Server 默认拉取 `ghcr.io/arnochenfx/lore-server:latest`，该镜像由仓库中的手动 GitHub Actions 工作流从 Epic Games 官方源码构建。工作流另会每日自动发布 `nightly`（上游 `main` 最新提交）、`stable`（最新正式版，如 `v0.8.6`）及同步版本标签 `v0.8.6` / `0.8.6` / `0.8` / `0` 与不可变 `sha-<short>` 标签。
 
 启动后常用地址（以 `192.168.1.2` 为例）：
 
