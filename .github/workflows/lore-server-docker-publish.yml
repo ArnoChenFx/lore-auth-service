@@ -1,9 +1,15 @@
 # ── Lore Server Docker image publishing workflow ──
-# Scheduled tasks:
-#   - Daily at 03:17 UTC, build the upstream EpicGames/lore main branch as nightly + latest + sha-xxx (skip if sha tag already exists in GHCR)
-#   - Daily at 03:17 UTC, check upstream for a new stable Release (e.g., v0.8.6, excluding draft/prerelease); if GHCR does not yet have the version tag, build and push stable + v0.8.6 + semver aliases + sha-xxx
-# Manual trigger:
-#   - Keep the original workflow_dispatch: any lore_ref and image_tag can be specified and built with the original logic
+# Scheduled tasks (daily at 03:17 UTC; GitHub may delay or drop schedule runs):
+#   - Build the upstream EpicGames/lore main branch as nightly + latest + sha-xxx (skip if the sha tag already exists in GHCR)
+#   - Check upstream for a new stable Release (e.g., v0.8.6, excluding draft/prerelease); if GHCR does not yet have the version tag, build and push stable + v0.8.6 + semver aliases + sha-xxx
+# Manual trigger (workflow_dispatch), select which jobs run via `mode`:
+#   - mode=manual (default): the original flow, build any lore_ref as image_tag
+#   - mode=nightly: run the nightly flow immediately (upstream main -> nightly + latest + sha-xxx)
+#   - mode=stable: run the stable flow immediately (detect latest release -> stable + version tags)
+#   - mode=all: run both nightly and stable flows (same as one scheduled run)
+#   - force_rebuild (nightly/stable/all only): skip the GHCR dedup check and rebuild
+#     even if the dedup tag already exists, e.g. to re-point the nightly/stable tag
+#     at a commit whose sha tag was pushed by another path
 
 name: Lore Server Docker Publish
 
@@ -13,13 +19,28 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
+      mode:
+        description: "manual = build lore_ref below; nightly/stable/all = run the scheduled flows now"
+        required: true
+        default: "manual"
+        type: choice
+        options:
+          - manual
+          - nightly
+          - stable
+          - all
+      force_rebuild:
+        description: "Nightly/stable/all only: skip the GHCR dedup check and force a rebuild"
+        required: false
+        default: false
+        type: boolean
       lore_ref:
-        description: "Branch, tag, or commit SHA from EpicGames/lore"
+        description: "Branch, tag, or commit SHA from EpicGames/lore (mode=manual only)"
         required: true
         default: "main"
         type: string
       image_tag:
-        description: "Image tag to publish to GHCR, such as latest or v0.1.0"
+        description: "Image tag to publish to GHCR, such as latest or v0.1.0 (mode=manual only)"
         required: true
         default: "latest"
         type: string
@@ -39,10 +60,11 @@ env:
 
 jobs:
   # ═══════════════════════════════════════════════════════════════
-  # Manual build: fully compatible with the original logic, always builds
+  # Manual build: fully compatible with the original logic.
+  # Runs only for workflow_dispatch with mode=manual (the default).
   # ═══════════════════════════════════════════════════════════════
   build-manual:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'manual' }}
     name: Manual build
     runs-on: ubuntu-latest
     concurrency:
@@ -125,12 +147,14 @@ jobs:
           cache-to: type=gha,mode=max,scope=lore-server
 
   # ═══════════════════════════════════════════════════════════════
-  # Daily nightly: tracks the latest commit on upstream main
+  # Nightly: tracks the latest commit on upstream main.
+  # Runs on schedule, or manually via workflow_dispatch with
+  # mode=nightly / mode=all (force_rebuild bypasses the dedup check).
   # Tags: nightly + latest + sha-<short> (latest tracks nightly)
   # Deduplication: skip if sha-xxx already exists in GHCR
   # ═══════════════════════════════════════════════════════════════
   build-nightly:
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'nightly' || inputs.mode == 'all')) }}
     name: Nightly build (main → nightly)
     runs-on: ubuntu-latest
     concurrency:
@@ -181,8 +205,18 @@ jobs:
         env:
           SOURCE_SHORT_SHA: ${{ steps.source.outputs.short_sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
         run: |
           set -euo pipefail
+
+          # Manual runs may force a rebuild, bypassing the dedup check entirely
+          # (e.g. to re-point the nightly tag at a commit whose sha tag already exists).
+          if [[ "${FORCE_REBUILD:-false}" == "true" ]]; then
+            echo "Force rebuild requested; skipping the GHCR dedup check."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           repo="${IMAGE_NAME#ghcr.io/}"           # e.g. arnochenfx/lore-server
           target_tag="sha-${SOURCE_SHORT_SHA}"
 
@@ -250,14 +284,16 @@ jobs:
           cache-to: type=gha,mode=max,scope=lore-server-nightly
 
   # ═══════════════════════════════════════════════════════════════
-  # Auto stable: detects the latest upstream stable Release
+  # Auto stable: detects the latest upstream stable Release.
+  # Runs on schedule, or manually via workflow_dispatch with
+  # mode=stable / mode=all (force_rebuild bypasses the dedup check).
   # Tags: stable + v0.8.6 + semver aliases (0.8.6/0.8/0) + sha-xxx
   # Deduplication: skip if GHCR already has the v0.8.6 tag
   # Logic: call /releases/latest (excludes draft/prerelease),
   #        fallback to scanning /releases list for the latest non-prerelease if needed
   # ═══════════════════════════════════════════════════════════════
   build-stable:
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && (inputs.mode == 'stable' || inputs.mode == 'all')) }}
     name: Stable build (release → stable + version)
     runs-on: ubuntu-latest
     concurrency:
@@ -335,8 +371,18 @@ jobs:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           SKIP_RELEASE: ${{ steps.release.outputs.skip }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
         run: |
           set -euo pipefail
+
+          # Manual runs may force a rebuild, bypassing the dedup check entirely
+          # (e.g. to rebuild a release whose image was pushed broken or deleted).
+          if [[ "${FORCE_REBUILD:-false}" == "true" ]]; then
+            echo "Force rebuild requested; skipping the GHCR dedup check."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [[ "$SKIP_RELEASE" == "true" ]]; then
             echo "No valid Release; skipping."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
