@@ -275,13 +275,13 @@ endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
 2. 在 Lore Client 或 CLI 中完成一次新的浏览器登录：
 
    ```bash
-   lore auth login lore://lore.example.com:41337
+   lore auth login lores://lore.example.com:41337
    ```
 
 3. 使用普通用户列出仓库：
 
    ```bash
-   lore repository list lore://lore.example.com:41337
+   lore repository list lores://lore.example.com:41337
    ```
 
 4. 确认输出只包含该用户获得权限的仓库，并核对名称和 Repository ID。
@@ -326,7 +326,8 @@ docker compose --env-file .env.lore-stack -f docker-compose.lore-stack.yml up -d
 
 启动后常用地址（以 `192.168.1.2` 为例）：
 
-- Lore Server：`lore://192.168.1.2:41337`
+- Lore Server（TLS 加密）：`lores://192.168.1.2:41337`
+  > **注意**：`lore://` 使用明文 gRPC，`lores://` 使用 TLS 加密 gRPC。lore-stack 部署默认启用 TLS，因此必须使用 `lores://` scheme。
 - Lore Auth 管理后台：`https://192.168.1.2:8080/admin`
 - Lore Auth gRPC：`https://192.168.1.2:50051`
 - Lore Server 健康检查：`http://192.168.1.2:41339/health_check`

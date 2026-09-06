@@ -283,13 +283,13 @@ The following invariants must hold:
 2. Complete a fresh browser login from Lore Client or the CLI:
 
    ```bash
-   lore auth login lore://lore.example.com:41337
+   lore auth login lores://lore.example.com:41337
    ```
 
 3. List repositories as an ordinary user:
 
    ```bash
-   lore repository list lore://lore.example.com:41337
+   lore repository list lores://lore.example.com:41337
    ```
 
 4. Confirm that the output contains only repositories granted to that user, with the expected names and Repository IDs.
