@@ -45,7 +45,7 @@ The username and password are submitted only to the auth service's browser page.
 
 ## Quick start for local development
 
-Prerequisite: Bun 1.3 or newer.
+Prerequisite: Bun 1.4 or newer.
 
 ```bash
 bun install

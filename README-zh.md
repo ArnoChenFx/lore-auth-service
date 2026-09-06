@@ -45,7 +45,7 @@ sequenceDiagram
 
 ## 本地开发快速开始
 
-前置条件：Bun 1.3 或更高版本。
+前置条件：Bun 1.4 或更高版本。
 
 ```bash
 bun install
