@@ -10,7 +10,7 @@ Lore Auth Service is a TypeScript/Bun implementation of <a href="https://github.
 - AuthN and repository-scoped AuthZ JWTs with all claims required by Lore
 - Repository discovery through `LookupUserPermissions`
 - Resource creation/deletion through Lore ReBAC
-- Per-user `read`, `write`, and `admin` repository permissions
+- Per-user `read`, `write`, `admin`, `obliterate`, and `migrate` repository permissions
 - Username/password users with scrypt password hashing
 - JWKS verification for Lore Server
 - REST access/refresh tokens for the administration panel and API clients
@@ -241,8 +241,10 @@ If the server container does not include the `lore` CLI, use a matching CLI on t
    - `read`: browse, clone, and read repository content.
    - `write`: push and other repository writes; normally grant it together with `read`.
    - `admin`: repository-level administration; grant it only to users who manage the resource.
+   - `obliterate`: required by `lore file obliterate`; without it the server answers permission denied.
+   - `migrate`: required by Lore `LockService.AdminLock` to apply admin locks; no CLI entry point today, but internal management tooling uses it.
 
-Auth service administrators implicitly receive all three permissions for every **registered** resource, but they still cannot access an unregistered resource. Validate the migration with at least one ordinary user so that administrator privileges do not hide missing assignments.
+Auth service administrators implicitly receive all five permissions for every **registered** resource, but they still cannot access an unregistered resource. Validate the migration with at least one ordinary user so that administrator privileges do not hide missing assignments.
 
 ### Step 3: Enable JWT verification
 
@@ -306,6 +308,10 @@ Common migration failures:
 | JWT issuer validation fails | `JWT_ISSUER` exactly matches `server.auth.jwt_issuer` |
 | JWT audience validation fails | `JWT_AUDIENCE` contains the hostname or IP actually used by the Lore URL |
 | JWKS fetch fails or `kid` is unknown | Lore Server can access `/.well-known/jwks.json` and `KEY_DIR` was not replaced |
+| Lore Server exits with `EndpointUnresolvable` | Whether `[server.auth.jwk].endpoint` was removed. Since Lore 0.10.0 a missing endpoint triggers OIDC discovery (`<iss>/.well-known/openid-configuration`), which this service does not serve |
+| Lore Server exits with `auth_url ... but [server.auth] is not` | `auth_url` must be set together with `[server.auth]`. Since Lore 0.10.0 this pairing refuses to start, so a rollback must comment out `auth_url` as well |
+
+See [docs/note/lore-0.10.0-impact.md](docs/note/lore-0.10.0-impact.md) for the full assessment of the Lore 0.10.0 authorization changes.
 
 To roll back, stop Lore Server, restore the previous unauthenticated configuration, and start it again. Resources and permissions added to the auth service do not modify Lore repository data and may remain in place for the next migration attempt.
 
@@ -362,7 +368,7 @@ Alternatively, terminate HTTPS and gRPC TLS at a reverse proxy. The public gRPC 
 
 The administration panel is available at `/admin`. The administrator sign-in card is centered on the page, and a compact administration layout is restored after sign-in. The repository, user, permission controls, and save button share one configuration row on desktop screens. The administration and browser authentication pages display English by default and provide a language switch at the top of the page; the selected language is saved in `localStorage`. The administration page also supports light and dark themes, uses neutral dark-gray backgrounds in dark mode, and follows the system theme on the first visit. Access and refresh tokens live only in the current tab's `sessionStorage` and are removed when the tab closes or the operator signs out.
 
-New repositories created through Lore ReBAC are registered automatically and their creator receives `read`, `write`, and `admin`. For repositories that existed before auth was enabled:
+New repositories created through Lore ReBAC are registered automatically and their creator receives `read`, `write`, `admin`, `obliterate`, and `migrate`. For repositories that existed before auth was enabled:
 
 1. Find the 32-hex-character Lore Repository ID.
 2. Register `urc-<repository-id>` in the administration panel.

@@ -182,11 +182,15 @@ describe("Lore gRPC authentication flow", () => {
       context.config,
       exchanged.token.user_token,
     );
-    expect(authz?.resources).toEqual([
-      {
-        resource_id: resourceId,
-        permission: ["admin", "read", "write"],
-      },
+    expect(authz?.resources).toHaveLength(1);
+    expect(authz?.resources?.[0]?.resource_id).toBe(resourceId);
+    // AuthZ token 的资源权限来自数据库，顺序不保证；用集合比较。
+    expect([...(authz?.resources?.[0]?.permission ?? [])].sort()).toEqual([
+      "admin",
+      "migrate",
+      "obliterate",
+      "read",
+      "write",
     ]);
   });
 });

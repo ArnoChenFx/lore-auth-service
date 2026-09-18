@@ -10,7 +10,7 @@ Lore Auth Service 是基于 TypeScript 与 Bun 实现的 [Epic Games Lore](https
 - 含 Lore 必需 Claims 的 AuthN JWT 与仓库范围 AuthZ JWT
 - 通过 `LookupUserPermissions` 浏览有权访问的仓库
 - 通过 Lore ReBAC 创建和删除仓库资源
-- 按用户配置仓库 `read`、`write`、`admin` 权限
+- 按用户配置仓库 `read`、`write`、`admin`、`obliterate`、`migrate` 权限
 - 使用 scrypt 哈希密码的本地账号
 - 供 Lore Server 验签的 JWKS
 - 面向管理后台和 API 客户端的 REST Access/Refresh Token
@@ -233,8 +233,10 @@ repository-name (0194b726b34e72b0b45550b88a967076)
    - `read`：浏览、Clone、读取仓库内容。
    - `write`：Push 和其他仓库写入操作；通常与 `read` 一起授予。
    - `admin`：仓库级管理操作，只授予需要管理资源的用户。
+   - `obliterate`：`lore file obliterate` 擦除仓库内容所必需；缺失时该命令在服务端返回 permission denied。
+   - `migrate`：Lore `LockService.AdminLock` 应用管理员锁所需；目前没有对应的 CLI 入口，内部管理工具会用到。
 
-认证服务管理员对所有**已登记**资源隐式拥有三项权限，但仍无法访问未登记资源。迁移验证应至少使用一个普通用户，避免管理员的隐式权限掩盖漏配。
+认证服务管理员对所有**已登记**资源隐式拥有上述五项权限，但仍无法访问未登记资源。迁移验证应至少使用一个普通用户，避免管理员的隐式权限掩盖漏配。
 
 ### 第三步：启用 JWT 验证
 
@@ -298,6 +300,10 @@ endpoint = "https://auth.example.com:8080/.well-known/jwks.json"
 | JWT issuer 校验失败 | `JWT_ISSUER` 与 `server.auth.jwt_issuer` 是否逐字一致 |
 | JWT audience 校验失败 | `JWT_AUDIENCE` 是否包含 Lore URL 实际使用的主机名或 IP |
 | JWKS 获取失败或未知 `kid` | Lore Server 是否能访问 `/.well-known/jwks.json`；`KEY_DIR` 是否被意外更换 |
+| Lore Server 启动报 `EndpointUnresolvable` | 是否删除了 `[server.auth.jwk].endpoint`。Lore 0.10.0 起会在该配置缺席时尝试 OIDC discovery（请求 `<iss>/.well-known/openid-configuration`），而本服务不提供该文档 |
+| Lore Server 启动报 `auth_url ... but [server.auth] is not` | `auth_url` 必须与 `[server.auth]` 同时存在。Lore 0.10.0 起这种组合会拒绝启动，回滚时需连同 `auth_url` 一起注释 |
+
+Lore 0.10.0 鉴权变更的完整评估见 [docs/note/lore-0.10.0-impact.md](docs/note/lore-0.10.0-impact.md)。
 
 若必须回滚，停止 Lore Server，恢复迁移前的无认证配置后再启动。认证服务中新增的资源和权限不会修改 Lore 仓库数据，可以保留供下一次迁移继续使用。
 
@@ -412,7 +418,7 @@ services:
 
 管理后台位于 `/admin`。管理员登录卡片在页面中居中显示，进入控制台后自动恢复紧凑的管理布局。仓库、用户、权限选项与保存按钮在桌面端显示于同一配置行。管理页面和浏览器认证页默认显示英文，用户可在页面顶部切换中文；语言选择通过 `localStorage` 记住。管理页面还提供亮色与暗色模式，暗色模式使用中性暗灰背景，并在首次访问时跟随系统主题。Access Token 与 Refresh Token 只保存在当前标签页的 `sessionStorage` 中，关闭标签页或退出登录后会被清除。
 
-通过 Lore ReBAC 创建的新仓库会自动登记，创建者取得 `read`、`write` 和 `admin`。对启用认证前已经存在的仓库：
+通过 Lore ReBAC 创建的新仓库会自动登记，创建者取得 `read`、`write`、`admin`、`obliterate` 和 `migrate`。对启用认证前已经存在的仓库：
 
 1. 找到 32 位十六进制 Lore Repository ID。
 2. 在管理后台登记 `urc-<repository-id>`。

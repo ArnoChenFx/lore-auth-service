@@ -495,6 +495,8 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
                 <label><input id="permissionRead" type="checkbox"> <span data-i18n="read">Read</span></label>
                 <label><input id="permissionWrite" type="checkbox"> <span data-i18n="write">Write</span></label>
                 <label><input id="permissionAdmin" type="checkbox"> <span data-i18n="admin">Admin</span></label>
+                <label><input id="permissionObliterate" type="checkbox"> <span data-i18n="obliterate">Obliterate</span></label>
+                <label><input id="permissionMigrate" type="checkbox"> <span data-i18n="migrate">Migrate</span></label>
               </div>
               <button class="btn-primary" onclick="saveAccess()" data-i18n="saveAccess">Save access</button>
             </div>
@@ -559,6 +561,8 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
         read: 'Read',
         write: 'Write',
         admin: 'Admin',
+        obliterate: 'Obliterate',
+        migrate: 'Migrate',
         saveAccess: 'Save access',
         permissions: 'Permissions',
         switchToDark: 'Switch to dark mode',
@@ -622,6 +626,8 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
         read: '读取',
         write: '写入',
         admin: '管理',
+        obliterate: '擦除',
+        migrate: '迁移',
         saveAccess: '保存访问权限',
         permissions: '权限',
         switchToDark: '切换为暗色模式',
@@ -936,6 +942,8 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       document.getElementById('permissionRead').checked = permissions.has('read');
       document.getElementById('permissionWrite').checked = permissions.has('write');
       document.getElementById('permissionAdmin').checked = permissions.has('admin');
+      document.getElementById('permissionObliterate').checked = permissions.has('obliterate');
+      document.getElementById('permissionMigrate').checked = permissions.has('migrate');
     }
 
     document.getElementById('accessResource').addEventListener('change', syncPermissionCheckboxes);
@@ -971,6 +979,8 @@ export const ADMIN_PANEL_HTML = `<!DOCTYPE html>
       if (document.getElementById('permissionRead').checked) permissions.push('read');
       if (document.getElementById('permissionWrite').checked) permissions.push('write');
       if (document.getElementById('permissionAdmin').checked) permissions.push('admin');
+      if (document.getElementById('permissionObliterate').checked) permissions.push('obliterate');
+      if (document.getElementById('permissionMigrate').checked) permissions.push('migrate');
       try {
         await request(
           '/admin/resources/' + encodeURIComponent(resourceId) + '/users/' + encodeURIComponent(username),

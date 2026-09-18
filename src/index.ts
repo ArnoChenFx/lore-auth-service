@@ -334,7 +334,11 @@ async function handleSetResourceAccess(
     : [];
   const allowed = new Set<string>(OWNER_PERMISSIONS);
   if (requested.some((permission) => !allowed.has(permission))) {
-    return errorResponse("permissions may only contain read, write, or admin", 400);
+    // 错误信息直接由白名单拼出，避免新增权限时遗漏更新这段提示。
+    return errorResponse(
+      `permissions may only contain ${[...OWNER_PERMISSIONS].join(", ")}`,
+      400,
+    );
   }
   setUserResourcePermissions(context.config.dbPath, user.id, resourceId, requested);
   return json({ resource_id: resourceId, username, permissions: requested });

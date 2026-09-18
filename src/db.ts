@@ -417,7 +417,28 @@ export function cleanupExpiredAuthSessions(dbPath: string, now = Date.now()): vo
 
 // ─── Lore 资源与权限 ───────────────────────────────────────────────────────
 
-export const OWNER_PERMISSIONS = ["read", "write", "admin"] as const;
+/**
+ * 资源创建者自动获得的权限集，同时也是管理面板与 REST 接口允许写入的权限白名单。
+ *
+ * 字段名必须与 Lore Server 的权限判断逐字一致，它读的是 JWT 的 `resources` claim：
+ * - `read` / `write` / `admin`：Lore 的仓库通配权限，同时 `admin` 还决定
+ *   `DeleteResource` 是否放行。
+ * - `obliterate`：`lore-server/src/grpc/handlers/obliterate.rs` 用
+ *   `can_obliterate` 校验，对应真实 CLI 命令 `lore file obliterate`。缺少它时该命令
+ *   在服务端必然返回 permission denied。
+ * - `migrate`：`lore-server/src/grpc/lock_service.rs` 的 `AdminLock` 用它做
+ *   “应用管理员锁”的门槛，目前没有客户端调用点，但内部管理工具会用到。
+ *
+ * `migrate` 在 lore 0.9.0/0.10.0 都只通过资源 claim 判断，Lore 从未为它做过
+ * “仓库创建者自动获得”的兜底，因此这里与 `obliterate` 一起纳入默认权限集。
+ */
+export const OWNER_PERMISSIONS = [
+  "read",
+  "write",
+  "admin",
+  "obliterate",
+  "migrate",
+] as const;
 
 export function createResource(
   dbPath: string,

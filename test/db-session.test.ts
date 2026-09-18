@@ -69,11 +69,13 @@ describe("browser authentication session", () => {
     const resourceId = `urc-${"a".repeat(32)}`;
 
     expect(createResource(database.path, resourceId, "demo", user.id)).toBe(true);
-    expect(getUserResourcePermissions(database.path, user)).toEqual([
-      {
-        resource_id: resourceId,
-        permission: ["admin", "read", "write"],
-      },
-    ]);
+    // 顺序取决于 SQLite 的 ORDER BY permission，因此用集合比较，
+    // 避免新增权限时需要同步调整这个断言的字面顺序。
+    const permissions = getUserResourcePermissions(database.path, user);
+    expect(permissions).toHaveLength(1);
+    expect(permissions[0]?.resource_id).toBe(resourceId);
+    expect([...permissions[0]!.permission].sort()).toEqual(
+      ["admin", "migrate", "obliterate", "read", "write"],
+    );
   });
 });
