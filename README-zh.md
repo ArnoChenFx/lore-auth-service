@@ -494,7 +494,7 @@ services:
 撤销账号的效果会在不同组件中以不同时间生效：
 
 - 删除用户会立即在本服务中生效。该用户的 Access Token 会被 `/auth/me`、管理 API，以及按用户表校验 Token 的 gRPC 调用（例如权限查询和 Token 交换）拒绝；其 Refresh Token 也会失效。本版本没有禁用状态，因此删除用户是撤销其访问权限的唯一方式。
-- Lore Server 使用 `/.well-known/jwks.json` 中的公钥离线校验 JWT。删除前签发的 Token（包括仓库范围的 AuthZ Token）会一直在 Lore Server 上有效，直到 `TOKEN_TTL` 到期。
+- Lore Server 使用 `/.well-known/jwks.json` 中的公钥离线校验每个 Token 的签名和有效期。对于身份 Token，它随后会向本服务核对用户是否仍然存在且有权访问，因此已删除用户的身份 Token 会被 Lore Server 立即拒绝。仓库范围的 AuthZ Token 把授权写在 `resources` 声明中，Lore Server 无需调用本服务即可判断，因此删除前签发的仓库范围 AuthZ Token 会一直有效，直到 `TOKEN_TTL` 到期。
 - 轮换或删除 `KEY_DIR` 会改变签名密钥，使所有 Token 同时失效。
 
 较短的有效期可以限制被移除或泄露的 Token 的可用时长，代价是浏览器登录更频繁。对于敏感部署，请将 `TOKEN_TTL` 设为 `28800`（8 小时）或更短；只有可以接受长时间保持登录时，才保留默认值。
@@ -550,7 +550,7 @@ bun test
 - JWT 与密码不会写入应用日志、浏览器 URL 或浏览器登录 HTML。
 - 浏览器页与管理页设置严格 CSP、防嵌入、禁止缓存和禁止 Referrer 响应头。
 - 删除 `KEY_DIR` 会轮换签名密钥，并使全部已签发 JWT 失效。
-- 已删除用户的 Access Token 会被本服务立即拒绝；Lore Server 在 `TOKEN_TTL` 到期前仍会接受它（参见 [Token 有效期](#token-有效期)）。
+- 已删除用户的身份 Token 会被本服务和 Lore Server 立即拒绝。删除前签发的仓库范围 AuthZ Token 在 `TOKEN_TTL` 到期前仍会在 Lore Server 上有效（参见 [Token 有效期](#token-有效期)）。
 
 ## 开源协议
 

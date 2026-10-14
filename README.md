@@ -444,7 +444,7 @@ Both services use the definitions in `proto/`:
 Revoking an account reaches different components at different times:
 
 - Deleting a user takes effect immediately in this service. Its access tokens are rejected by `/auth/me`, the administration API, and the gRPC calls that check the token against the user table, such as permission lookups and token exchange. Its refresh tokens stop working. There is no disabled state, so deleting the user is the only way to revoke an account's access.
-- Lore Server validates JWTs offline with the keys from `/.well-known/jwks.json`. Tokens issued before the deletion, including repository-scoped tokens, keep working on Lore Server until they expire at `TOKEN_TTL`.
+- Lore Server checks the signature and expiry of every token offline, with the keys from `/.well-known/jwks.json`. For identity tokens it then asks this service whether the user still exists and has access, so a deleted user's identity token is refused at once. Repository-scoped tokens carry their grants in a `resources` claim that Lore Server evaluates without calling this service, so a repository-scoped token issued before the deletion keeps working until it expires at `TOKEN_TTL`.
 - Rotating or deleting `KEY_DIR` invalidates every token at once, because the signing key changes.
 
 A shorter lifetime limits how long a removed or stolen token stays usable, at the cost of more frequent browser sign-ins. For sensitive deployments, set `TOKEN_TTL` to `28800` (eight hours) or less. Keep the default only when long sessions are acceptable.
@@ -500,7 +500,7 @@ The integration suite starts a real gRPC server and verifies:
 - JWTs and passwords are not written to application logs, browser URLs, or browser login HTML.
 - Browser and administration pages set restrictive CSP, anti-framing, no-cache, and no-referrer headers.
 - Removing `KEY_DIR` rotates the signing key and invalidates all issued JWTs.
-- A deleted user's access token is rejected by this service at once. Lore Server accepts it until `TOKEN_TTL` expires (see [Token lifetime](#token-lifetime)).
+- A deleted user's identity token is refused by this service and by Lore Server at once. A repository-scoped token issued before the deletion stays valid on Lore Server until `TOKEN_TTL` expires (see [Token lifetime](#token-lifetime)).
 
 ## License
 
