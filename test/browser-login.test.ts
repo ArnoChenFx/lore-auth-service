@@ -45,6 +45,7 @@ async function createTestContext(): Promise<AuthServiceContext> {
     dbPath: join(directory, "auth.db"),
     adminUsername: "admin",
     adminPassword: "test-password",
+    allowInsecureDefaultAdminPassword: false,
     keyAlg: "RS256",
     tlsCertFile: null,
     tlsKeyFile: null,

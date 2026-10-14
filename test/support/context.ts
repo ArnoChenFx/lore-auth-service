@@ -47,6 +47,7 @@ export async function createTestContext(
     dbPath,
     adminUsername: "admin",
     adminPassword: "test-password",
+    allowInsecureDefaultAdminPassword: false,
     keyAlg: "RS256",
     tlsCertFile: null,
     tlsKeyFile: null,

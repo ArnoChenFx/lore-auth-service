@@ -255,6 +255,22 @@ export function deleteUser(dbPath: string, username: string): boolean {
   return result.changes > 0;
 }
 
+/** 替换密码并撤销该用户所有 Refresh Token，使旧凭据无法继续续期。 */
+export function setUserPassword(dbPath: string, userId: number, password: string): void {
+  if (password.length < 8) {
+    throw new Error("Password must contain at least 8 characters");
+  }
+  const connection = getDb(dbPath);
+  const transaction = connection.transaction(() => {
+    connection.run("UPDATE users SET password_hash = ? WHERE id = ?", [
+      hashPassword(password),
+      userId,
+    ]);
+    revokeAllUserRefreshTokens(dbPath, userId);
+  });
+  transaction();
+}
+
 export function userCount(dbPath: string): number {
   const row = getDb(dbPath).query("SELECT COUNT(*) as count FROM users").get() as {
     count: number;

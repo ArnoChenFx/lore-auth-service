@@ -33,9 +33,10 @@ services:
       AUTH_SESSION_TTL: "300"
       HEALTHCHECK_URL: "http://localhost:8080/health_check"
 
-      # Administrator account created on first startup.
+      # Administrator account created on first startup. The password is required; set it in the
+      # shell or in a .env file next to this compose file.
       ADMIN_USERNAME: "admin"
-      ADMIN_PASSWORD: "changeme"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the shell or a .env file}"
     volumes:
       # RSA key pair persistence. Deleting it regenerates the keys and invalidates all issued tokens.
       - lore-auth-keys:/app/keys

@@ -10,7 +10,7 @@ import { readFileSync } from "fs";
 import packageJson from "../package.json";
 import { handleAdminPanel } from "./admin-panel";
 import { isStandaloneExecutable } from "./build-environment";
-import { loadConfig } from "./config";
+import { PUBLIC_ADMIN_PASSWORDS, loadConfig } from "./config";
 import type { AuthServiceContext } from "./context";
 import {
   OWNER_PERMISSIONS,
@@ -30,6 +30,7 @@ import {
   listResources,
   listUsers,
   revokeRefreshToken,
+  setUserPassword,
   setUserResourcePermissions,
   type User,
   userCount,
@@ -570,29 +571,33 @@ export async function createAuthServiceContext(): Promise<AuthServiceContext> {
   return { config, keys, jwks };
 }
 
-/** 仅在空数据库中创建首个管理员，并对仍使用示例密码的部署给出明确告警。 */
-function bootstrapAdmin(context: AuthServiceContext): void {
-  createUser(
-    context.config.dbPath,
-    context.config.adminUsername,
-    context.config.adminPassword,
-    true,
-  );
-  console.log(`[bootstrap] Admin user created: ${context.config.adminUsername}`);
-  if (context.config.adminPassword === "changeme") {
-    console.warn(
-      "[security] Default admin password is in use. Set ADMIN_PASSWORD before exposing this service.",
-    );
+/**
+ * 空数据库首次启动时创建管理员。之后若管理员仍使用公开的内置或占位符密码，则替换为当前
+ * ADMIN_PASSWORD 并撤销其 Refresh Token；部署方设置的自定义密码永远不会被启动流程覆盖。
+ */
+function ensureBootstrapAdmin(context: AuthServiceContext): void {
+  const { dbPath, adminUsername, adminPassword } = context.config;
+  if (userCount(dbPath) === 0) {
+    createUser(dbPath, adminUsername, adminPassword, true);
+    console.log(`[bootstrap] Admin user created: ${adminUsername}`);
+    return;
   }
+  if (PUBLIC_ADMIN_PASSWORDS.includes(adminPassword)) return;
+  const admin = getUserByUsername(dbPath, adminUsername);
+  if (!admin) return;
+  const usesPublicPassword = PUBLIC_ADMIN_PASSWORDS.some(
+    (candidate) => authenticate(dbPath, adminUsername, candidate) !== null,
+  );
+  if (!usesPublicPassword) return;
+  setUserPassword(dbPath, admin.id, adminPassword);
+  console.log(`[bootstrap] Replaced the public default password of admin user ${adminUsername}`);
 }
 
 export async function startAuthService(
   context?: AuthServiceContext,
 ): Promise<RunningAuthService> {
   const resolvedContext = context ?? (await createAuthServiceContext());
-  if (userCount(resolvedContext.config.dbPath) === 0) {
-    bootstrapAdmin(resolvedContext);
-  }
+  ensureBootstrapAdmin(resolvedContext);
 
   const grpc = await startGrpcServer(resolvedContext);
   const tls =
@@ -651,11 +656,15 @@ async function main(): Promise<void> {
   const context = await createAuthServiceContext();
   const tokenFor = args.find((argument) => argument.startsWith("--token-for="));
 
-  if (args.includes("--bootstrap") || userCount(context.config.dbPath) === 0) {
-    if (userCount(context.config.dbPath) === 0) {
-      bootstrapAdmin(context);
-    }
+  if (
+    context.config.allowInsecureDefaultAdminPassword &&
+    PUBLIC_ADMIN_PASSWORDS.includes(context.config.adminPassword)
+  ) {
+    console.warn(
+      "[security] ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD is enabled with a publicly documented administrator password. Use it only for local development.",
+    );
   }
+  ensureBootstrapAdmin(context);
 
   if (tokenFor) {
     const username = tokenFor.slice("--token-for=".length);

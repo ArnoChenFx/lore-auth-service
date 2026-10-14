@@ -18,6 +18,15 @@ interface HealthResponse {
   grpc_port?: number;
 }
 
+function withoutAdminPasswordOverrides(
+  environment: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const copy = { ...environment };
+  delete copy.ADMIN_PASSWORD;
+  delete copy.ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD;
+  return copy;
+}
+
 /** 临时占用并释放一个回环端口，供独立程序启动测试使用。 */
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -89,6 +98,20 @@ try {
   let grpcPort = await freePort();
   while (grpcPort === httpPort) grpcPort = await freePort();
 
+  const refusedProcess = Bun.spawn([executable], {
+    cwd: temporaryDirectory,
+    env: withoutAdminPasswordOverrides(process.env),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const refusedOutput = await new Response(refusedProcess.stdout).text();
+  const refusedError = await new Response(refusedProcess.stderr).text();
+  if ((await refusedProcess.exited) === 0 || !refusedError.includes("ADMIN_PASSWORD")) {
+    throw new Error(
+      `编译产物在缺少 ADMIN_PASSWORD 时未拒绝启动：${(refusedOutput + refusedError).trim()}`,
+    );
+  }
+
   serviceProcess = Bun.spawn([executable], {
     cwd: temporaryDirectory,
     env: {
@@ -99,6 +122,8 @@ try {
       GRPC_PORT: String(grpcPort),
       PUBLIC_BASE_URL: `http://127.0.0.1:${httpPort}`,
       JWT_ISSUER: `http://127.0.0.1:${httpPort}`,
+      ADMIN_PASSWORD: "smoke-test-password",
+      ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD: "false",
       DB_PATH: join(temporaryDirectory, "lore-auth.db"),
       KEY_DIR: join(temporaryDirectory, "keys"),
     },

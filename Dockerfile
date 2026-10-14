@@ -60,7 +60,7 @@ ENV PORT=8080 \
     REFRESH_TOKEN_TTL=604800 \
     AUTH_SESSION_TTL=300 \
     HEALTHCHECK_URL=http://localhost:8080/health_check \
-    ADMIN_USERNAME=admin \
-    ADMIN_PASSWORD=changeme
+    ADMIN_USERNAME=admin
 
+# ADMIN_PASSWORD has no default; the container refuses to start until it is supplied at runtime.
 CMD ["bun", "run", "src/index.ts"]

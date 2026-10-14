@@ -53,7 +53,9 @@ cp .env.example .env
 bun run start
 ```
 
-On the first start, an empty database receives the configured administrator. The development defaults are `admin / changeme`; change `ADMIN_PASSWORD` before exposing the service.
+On the first start, an empty database receives the configured administrator. `ADMIN_PASSWORD` has no default: replace the placeholder in `.env` with a unique password of at least 8 characters, or the service refuses to start. For a throwaway local instance only, `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true` restores the old development account `admin / changeme`.
+
+On later starts, an administrator that still uses `changeme` or the example placeholder is switched to the current `ADMIN_PASSWORD`, and that user's refresh tokens are revoked. Any other password is never overwritten by startup.
 
 Useful endpoints:
 
@@ -317,7 +319,7 @@ To roll back, stop Lore Server, restore the previous unauthenticated configurati
 
 ## Docker
 
-The checked-in compose file starts a local development instance:
+The checked-in compose file starts a local development instance. Set `ADMIN_PASSWORD` first, either in the shell or in a `.env` file copied from `.env.example`; Compose stops with an error when it is missing.
 
 ```bash
 docker compose up -d --build
@@ -424,7 +426,8 @@ Both services use the definitions in `proto/`:
 | `KEY_DIR` | `./keys` | persisted RS256 key directory |
 | `DB_PATH` | `./lore-auth.db` | SQLite database |
 | `ADMIN_USERNAME` | `admin` | bootstrap administrator |
-| `ADMIN_PASSWORD` | `changeme` | bootstrap password |
+| `ADMIN_PASSWORD` | required | bootstrap password, at least 8 characters; startup is refused for `changeme` and the example placeholder |
+| `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD` | `false` | local development only: permits the built-in `changeme` password |
 | `TLS_CERT_FILE` | unset | PEM certificate chain for HTTP and gRPC |
 | `TLS_KEY_FILE` | unset | PEM private key for HTTP and gRPC |
 

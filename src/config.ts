@@ -20,10 +20,21 @@ export interface AppConfig {
   dbPath: string;
   adminUsername: string;
   adminPassword: string;
+  allowInsecureDefaultAdminPassword: boolean;
   keyAlg: string;
   tlsCertFile: string | null;
   tlsKeyFile: string | null;
 }
+
+/**
+ * 旧版本的内置管理员密码以及示例文件中的占位符都公开可见，因此它们只能在显式开发模式下
+ * 使用；启动时若数据库中的管理员仍是其中之一，会被替换为配置的 ADMIN_PASSWORD。
+ */
+export const BUILT_IN_ADMIN_PASSWORD = "changeme";
+export const PUBLIC_ADMIN_PASSWORDS: readonly string[] = [
+  BUILT_IN_ADMIN_PASSWORD,
+  "replace-with-a-long-random-password",
+];
 
 function env(key: string, fallback: string): string {
   return process.env[key]?.trim() || fallback;
@@ -60,6 +71,23 @@ function assertPositive(name: string, value: number): void {
   }
 }
 
+function assertAdminPassword(config: AppConfig): void {
+  if (!config.adminPassword) {
+    throw new Error(
+      "ADMIN_PASSWORD must be set. It is used only when the administrator is first created or when the built-in default is replaced.",
+    );
+  }
+  const usesPublicPassword = PUBLIC_ADMIN_PASSWORDS.includes(config.adminPassword);
+  if (usesPublicPassword && !config.allowInsecureDefaultAdminPassword) {
+    throw new Error(
+      "ADMIN_PASSWORD must not be a publicly documented value. Choose a unique password, or set ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true for local development only.",
+    );
+  }
+  if (config.adminPassword.length < 8) {
+    throw new Error("ADMIN_PASSWORD must contain at least 8 characters");
+  }
+}
+
 function assertHttpUrl(name: string, value: string): void {
   let parsed: URL;
   try {
@@ -77,6 +105,8 @@ function assertHttpUrl(name: string, value: string): void {
 
 export function loadConfig(): AppConfig {
   const issuer = env("JWT_ISSUER", "http://localhost:8080").replace(/\/+$/, "");
+  const allowInsecureDefaultAdminPassword =
+    env("ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD", "false") === "true";
   const config: AppConfig = {
     host: env("HOST", "0.0.0.0"),
     port: envInt("PORT", 8080),
@@ -97,7 +127,11 @@ export function loadConfig(): AppConfig {
     keyDir: env("KEY_DIR", "./keys"),
     dbPath: env("DB_PATH", "./lore-auth.db"),
     adminUsername: env("ADMIN_USERNAME", "admin"),
-    adminPassword: env("ADMIN_PASSWORD", "changeme"),
+    adminPassword: env(
+      "ADMIN_PASSWORD",
+      allowInsecureDefaultAdminPassword ? BUILT_IN_ADMIN_PASSWORD : "",
+    ),
+    allowInsecureDefaultAdminPassword,
     keyAlg: "RS256",
     tlsCertFile: envOptional("TLS_CERT_FILE"),
     tlsKeyFile: envOptional("TLS_KEY_FILE"),
@@ -114,5 +148,6 @@ export function loadConfig(): AppConfig {
   if (Boolean(config.tlsCertFile) !== Boolean(config.tlsKeyFile)) {
     throw new Error("TLS_CERT_FILE and TLS_KEY_FILE must be configured together");
   }
+  assertAdminPassword(config);
   return config;
 }

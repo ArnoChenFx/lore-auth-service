@@ -36,6 +36,7 @@ const config: AppConfig = {
   dbPath: ":memory:",
   adminUsername: "admin",
   adminPassword: "test-only",
+  allowInsecureDefaultAdminPassword: false,
   keyAlg: "RS256",
   tlsCertFile: null,
   tlsKeyFile: null,

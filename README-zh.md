@@ -53,7 +53,9 @@ cp .env.example .env
 bun run start
 ```
 
-第一次启动时，空数据库会创建配置中的管理员。开发默认账号为 `admin / changeme`；服务对外开放前必须修改 `ADMIN_PASSWORD`。
+第一次启动时，空数据库会创建配置中的管理员。`ADMIN_PASSWORD` 没有默认值：请把 `.env` 中的占位符替换为至少 8 位的唯一密码，否则服务拒绝启动。仅限本地临时调试时，可设置 `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true` 恢复旧的开发账号 `admin / changeme`。
+
+之后每次启动时，若管理员仍使用 `changeme` 或示例占位符，会被替换为当前 `ADMIN_PASSWORD`，并撤销该用户的 Refresh Token；其他密码不会被启动流程覆盖。
 
 常用端点：
 
@@ -309,7 +311,7 @@ Lore 0.10.0 鉴权变更的完整评估见 [docs/note/lore-0.10.0-impact.md](doc
 
 ## Docker
 
-仓库中的 compose 默认启动本地开发实例：
+仓库中的 compose 默认启动本地开发实例。请先在 shell 或由 `.env.example` 复制得到的 `.env` 中设置 `ADMIN_PASSWORD`；缺少该变量时 Compose 会报错停止。
 
 ```bash
 docker compose up -d --build
@@ -474,7 +476,8 @@ services:
 | `KEY_DIR` | `./keys` | 持久化 RS256 密钥目录 |
 | `DB_PATH` | `./lore-auth.db` | SQLite 数据库 |
 | `ADMIN_USERNAME` | `admin` | 初始管理员 |
-| `ADMIN_PASSWORD` | `changeme` | 初始管理员密码 |
+| `ADMIN_PASSWORD` | 必填 | 初始管理员密码，至少 8 位；使用 `changeme` 或示例占位符时拒绝启动 |
+| `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD` | `false` | 仅限本地开发：允许使用内置 `changeme` 密码 |
 | `TLS_CERT_FILE` | 未配置 | HTTP 与 gRPC 使用的 PEM 证书链 |
 | `TLS_KEY_FILE` | 未配置 | HTTP 与 gRPC 使用的 PEM 私钥 |
 

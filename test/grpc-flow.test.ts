@@ -67,6 +67,7 @@ beforeAll(async () => {
     dbPath,
     adminUsername: "admin",
     adminPassword: "admin-password",
+    allowInsecureDefaultAdminPassword: false,
     keyAlg: "RS256",
     tlsCertFile: null,
     tlsKeyFile: null,
