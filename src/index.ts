@@ -90,20 +90,77 @@ function errorResponse(message: string, status = 400): Response {
   return json({ error: message }, status);
 }
 
-async function parseJsonBody(req: Request): Promise<Record<string, unknown> | null> {
-  const length = Number(req.headers.get("content-length") ?? "0");
-  if (length > 64 * 1024) return null;
-  try {
-    return (await req.json()) as Record<string, unknown>;
-  } catch {
-    return null;
+const JSON_BODY_LIMIT_BYTES = 64 * 1024;
+const FORM_BODY_LIMIT_BYTES = 16 * 1024;
+
+type BodyParseResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: "too_large" | "invalid" };
+
+/**
+ * 按实际收到的字节数限制请求体，不信任 Content-Length。Chunked 请求没有长度声明，
+ * 必须在累计字节超过上限时立即停止读取，否则会先把整个请求放入内存。
+ */
+async function readBodyWithLimit(
+  req: Request,
+  limitBytes: number,
+): Promise<Uint8Array | "too_large"> {
+  const declared = req.headers.get("content-length");
+  if (declared !== null && Number(declared) > limitBytes) {
+    await req.body?.cancel().catch(() => undefined);
+    return "too_large";
   }
+  if (!req.body) return new Uint8Array(0);
+
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limitBytes) {
+      await reader.cancel().catch(() => undefined);
+      return "too_large";
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
-async function parseFormBody(req: Request): Promise<Record<string, string> | null> {
-  const length = Number(req.headers.get("content-length") ?? "0");
-  if (length > 16 * 1024) return null;
+async function parseJsonBody(req: Request): Promise<BodyParseResult<Record<string, unknown>>> {
+  const bytes = await readBodyWithLimit(req, JSON_BODY_LIMIT_BYTES);
+  if (bytes === "too_large") return { ok: false, reason: "too_large" };
 
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true, value: value as Record<string, unknown> };
+}
+
+function jsonBodyError(reason: "too_large" | "invalid"): Response {
+  return reason === "too_large"
+    ? errorResponse(
+        `Request body is larger than the ${JSON_BODY_LIMIT_BYTES}-byte (${JSON_BODY_LIMIT_BYTES / 1024} KiB) limit`,
+        413,
+      )
+    : errorResponse("Request body must be a JSON object", 400);
+}
+
+async function parseFormBody(req: Request): Promise<BodyParseResult<Record<string, string>>> {
   // 浏览器原生登录表单没有文件字段，固定使用 URL 编码。服务端不接受 multipart，
   // 因而无需调用 Bun 已弃用的 `formData()`，也不需要引入流式文件上传解析器。
   const contentType = req.headers
@@ -111,22 +168,22 @@ async function parseFormBody(req: Request): Promise<Record<string, string> | nul
     ?.split(";", 1)[0]
     ?.trim()
     .toLowerCase();
-  if (contentType !== "application/x-www-form-urlencoded") return null;
-
-  try {
-    const encoded = await req.text();
-    // Content-Length 可能缺失或不可信，因此读取后再次按 UTF-8 实际字节数限制。
-    if (new TextEncoder().encode(encoded).byteLength > 16 * 1024) return null;
-    return Object.fromEntries(new URLSearchParams(encoded));
-  } catch {
-    return null;
+  if (contentType !== "application/x-www-form-urlencoded") {
+    return { ok: false, reason: "invalid" };
   }
+
+  const bytes = await readBodyWithLimit(req, FORM_BODY_LIMIT_BYTES);
+  if (bytes === "too_large") return { ok: false, reason: "too_large" };
+  const encoded = new TextDecoder().decode(bytes);
+  return { ok: true, value: Object.fromEntries(new URLSearchParams(encoded)) };
 }
 
 async function handleLogin(context: AuthServiceContext, req: Request): Promise<Response> {
-  const body = await parseJsonBody(req);
-  const username = typeof body?.username === "string" ? body.username : "";
-  const password = typeof body?.password === "string" ? body.password : "";
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const body = parsed.value;
+  const username = typeof body.username === "string" ? body.username : "";
+  const password = typeof body.password === "string" ? body.password : "";
   if (!username || !password) return errorResponse("Missing username or password", 400);
 
   // 复用数据库认证函数的恒定时间哈希比较，同时保持外部错误不可枚举用户。
@@ -164,9 +221,10 @@ async function handleRefreshToken(
   context: AuthServiceContext,
   req: Request,
 ): Promise<Response> {
-  const body = await parseJsonBody(req);
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
   const rawRefreshToken =
-    typeof body?.refresh_token === "string" ? body.refresh_token : "";
+    typeof parsed.value.refresh_token === "string" ? parsed.value.refresh_token : "";
   if (!rawRefreshToken) return errorResponse("Missing refresh_token", 400);
 
   const tokenHash = hashRefreshToken(rawRefreshToken);
@@ -229,16 +287,18 @@ async function handleCreateUser(
 ): Promise<Response> {
   const check = await requireAdmin(context, req);
   if (!check.ok) return errorResponse(check.message, check.status);
-  const body = await parseJsonBody(req);
-  const username = typeof body?.username === "string" ? body.username : "";
-  const password = typeof body?.password === "string" ? body.password : "";
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const body = parsed.value;
+  const username = typeof body.username === "string" ? body.username : "";
+  const password = typeof body.password === "string" ? body.password : "";
   if (!username || !password) return errorResponse("Missing username or password", 400);
   try {
     const user = createUser(
       context.config.dbPath,
       username,
       password,
-      body?.is_admin === true,
+      body.is_admin === true,
     );
     return json(
       {
@@ -304,10 +364,12 @@ async function handleCreateResource(
 ): Promise<Response> {
   const check = await requireAdmin(context, req);
   if (!check.ok) return errorResponse(check.message, check.status);
-  const body = await parseJsonBody(req);
-  const resourceId = typeof body?.resource_id === "string" ? body.resource_id.trim() : "";
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const body = parsed.value;
+  const resourceId = typeof body.resource_id === "string" ? body.resource_id.trim() : "";
   const resourceName =
-    typeof body?.resource_name === "string" ? body.resource_name.trim() : resourceId;
+    typeof body.resource_name === "string" ? body.resource_name.trim() : resourceId;
   if (!/^urc-[0-9a-fA-F]{32}$/.test(resourceId)) {
     return errorResponse("resource_id must be urc-<32 hexadecimal repository id>", 400);
   }
@@ -328,9 +390,10 @@ async function handleSetResourceAccess(
   );
   const user = getUserByUsername(context.config.dbPath, username);
   if (!resource || !user) return errorResponse("Resource or user was not found", 404);
-  const body = await parseJsonBody(req);
-  const requested = Array.isArray(body?.permissions)
-    ? body.permissions.filter((item): item is string => typeof item === "string")
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const requested = Array.isArray(parsed.value.permissions)
+    ? parsed.value.permissions.filter((item): item is string => typeof item === "string")
     : [];
   const allowed = new Set<string>(OWNER_PERMISSIONS);
   if (requested.some((permission) => !allowed.has(permission))) {
@@ -348,11 +411,21 @@ async function handleBrowserSessionApproval(
   context: AuthServiceContext,
   req: Request,
 ): Promise<Response> {
-  const body = await parseFormBody(req);
-  const sessionCode = body?.session_code ?? "";
-  const clientState = body?.client_state ?? "";
-  const username = body?.username?.trim() ?? "";
-  const password = body?.password ?? "";
+  const parsed = await parseFormBody(req);
+  if (!parsed.ok && parsed.reason === "too_large") {
+    return html(
+      renderInvalidSession({
+        en: `The login form is larger than ${FORM_BODY_LIMIT_BYTES / 1024} KiB. Return to Lore Client and try again.`,
+        zh: `登录表单超过 ${FORM_BODY_LIMIT_BYTES / 1024} KiB 限制，请返回 Lore Client 重试。`,
+      }),
+      413,
+    );
+  }
+  const body: Record<string, string | undefined> = parsed.ok ? parsed.value : {};
+  const sessionCode = body.session_code ?? "";
+  const clientState = body.client_state ?? "";
+  const username = body.username?.trim() ?? "";
+  const password = body.password ?? "";
   if (!sessionCode || !clientState || !username || !password) {
     return html(
       renderInvalidSession({
