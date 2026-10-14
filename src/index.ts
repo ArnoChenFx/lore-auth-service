@@ -31,6 +31,7 @@ import {
   listUsers,
   revokeRefreshToken,
   setUserResourcePermissions,
+  type User,
   userCount,
 } from "./db";
 import {
@@ -255,12 +256,33 @@ async function handleRefreshToken(
   });
 }
 
-async function handleMe(context: AuthServiceContext, req: Request): Promise<Response> {
+type BearerAuthResult =
+  | { ok: true; payload: TokenPayload; user: User }
+  | { ok: false; message: string };
+
+/**
+ * 签名有效只说明 Token 曾由本服务签发，不代表账号仍然存在。这里以 Token 的 `sub`
+ * 对应的数据库用户为准，并按 ID 而非用户名查找，避免删除后同名新用户继承旧 Token。
+ */
+async function authenticateBearer(
+  context: AuthServiceContext,
+  req: Request,
+): Promise<BearerAuthResult> {
   const token = extractBearerToken(req.headers.get("Authorization"));
-  if (!token) return errorResponse("Missing Authorization Bearer token", 401);
+  if (!token) return { ok: false, message: "Missing Authorization Bearer token" };
   const payload = await verifyToken(context.keys, context.config, token);
-  if (!payload) return errorResponse("Token is invalid or expired", 401);
-  return json({ user: payload });
+  if (!payload || !/^\d+$/.test(payload.sub)) {
+    return { ok: false, message: "Token is invalid or expired" };
+  }
+  const user = getUserById(context.config.dbPath, Number(payload.sub));
+  if (!user) return { ok: false, message: "Token is invalid or expired" };
+  return { ok: true, payload, user };
+}
+
+async function handleMe(context: AuthServiceContext, req: Request): Promise<Response> {
+  const auth = await authenticateBearer(context, req);
+  if (!auth.ok) return errorResponse(auth.message, 401);
+  return json({ user: { ...auth.payload, is_admin: auth.user.is_admin === 1 } });
 }
 
 type AdminCheckResult =
@@ -271,14 +293,12 @@ async function requireAdmin(
   context: AuthServiceContext,
   req: Request,
 ): Promise<AdminCheckResult> {
-  const token = extractBearerToken(req.headers.get("Authorization"));
-  if (!token) return { ok: false, status: 401, message: "Missing Authorization Bearer token" };
-  const payload = await verifyToken(context.keys, context.config, token);
-  if (!payload) return { ok: false, status: 401, message: "Token is invalid or expired" };
-  if (!payload.is_admin) {
+  const auth = await authenticateBearer(context, req);
+  if (!auth.ok) return { ok: false, status: 401, message: auth.message };
+  if (auth.user.is_admin !== 1) {
     return { ok: false, status: 403, message: "Admin privileges required" };
   }
-  return { ok: true, payload };
+  return { ok: true, payload: auth.payload };
 }
 
 async function handleCreateUser(
