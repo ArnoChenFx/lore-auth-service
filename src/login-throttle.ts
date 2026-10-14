@@ -8,10 +8,14 @@
  * - 账号：统计窗口内失败过的不同来源数。单一来源无论失败多少次都只计为一个，因此不能
  *   单独锁死他人账号；只有多个来源同时失败才会触发账号级锁定。
  *
+ * 所有维度的来源都经过 `throttleSource` 归一：IPv4 逐地址计数，IPv6 按 /64 前缀计数，
+ * 同一 /64 内的地址不会增加来源数。
+ *
  * 被拒绝的请求既不校验密码也不计入失败，锁定期间无法通过继续尝试来延长锁定时间。
  */
 
 import type { AppConfig } from "./config";
+import { throttleSource } from "./client-address";
 import {
   clearLoginThrottle,
   getLoginThrottle,
@@ -132,11 +136,11 @@ function backoffUntil(
 }
 
 function pairKey(username: string, address: string): string {
-  return hashOpaqueToken(JSON.stringify([username, address]));
+  return hashOpaqueToken(JSON.stringify([username, throttleSource(address)]));
 }
 
 function addressKey(address: string): string {
-  return hashOpaqueToken(JSON.stringify([address]));
+  return hashOpaqueToken(JSON.stringify([throttleSource(address)]));
 }
 
 function accountKey(username: string): string {

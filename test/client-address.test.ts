@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { UNKNOWN_CLIENT_ADDRESS, clientAddress, normalizeIp } from "../src/client-address";
+import {
+  UNKNOWN_CLIENT_ADDRESS,
+  clientAddress,
+  normalizeIp,
+  throttleSource,
+} from "../src/client-address";
 
 function request(forwardedFor?: string): Request {
   const headers: Record<string, string> = {};
@@ -15,11 +20,35 @@ describe("normalizeIp", () => {
     expect(normalizeIp("::ffff:198.51.100.7")).toBe("198.51.100.7");
   });
 
+  test("unwraps IPv4-mapped addresses written in hexadecimal", () => {
+    expect(normalizeIp("::ffff:c633:6407")).toBe("198.51.100.7");
+    expect(normalizeIp("0:0:0:0:0:ffff:c633:6407")).toBe("198.51.100.7");
+  });
+
   test("rejects values that are not bare IP addresses", () => {
     expect(normalizeIp("unknown")).toBeNull();
     expect(normalizeIp("203.0.113.5:443")).toBeNull();
     expect(normalizeIp("")).toBeNull();
     expect(normalizeIp(null)).toBeNull();
+  });
+});
+
+describe("throttleSource", () => {
+  test("keys an IPv6 address by its /64 prefix", () => {
+    expect(throttleSource("2001:db8:1:2:abcd:0:0:1")).toBe("2001:db8:1:2::/64");
+    expect(throttleSource("2001:db8:1:2:ffff:ffff:ffff:ffff")).toBe("2001:db8:1:2::/64");
+    expect(throttleSource("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(throttleSource("2001:db8:1:3::1")).not.toBe(throttleSource("2001:db8:1:2::1"));
+  });
+
+  test("keeps IPv4 addresses and unwraps IPv4-mapped addresses", () => {
+    expect(throttleSource("203.0.113.5")).toBe("203.0.113.5");
+    expect(throttleSource("::ffff:203.0.113.5")).toBe("203.0.113.5");
+    expect(throttleSource("::ffff:cb00:7105")).toBe("203.0.113.5");
+  });
+
+  test("returns values that are not addresses unchanged", () => {
+    expect(throttleSource(UNKNOWN_CLIENT_ADDRESS)).toBe(UNKNOWN_CLIENT_ADDRESS);
   });
 });
 

@@ -507,7 +507,7 @@ export function clearLoginThrottle(
 
 /**
  * 返回账号在 `sinceMs` 之后失败过的不同来源中，第 `rank` 个最近失败的时间。
- * 每个（用户名, IP）组合只有一行，因此计数天然按来源去重。
+ * 每个（用户名, 来源）组合只有一行，来源为 IPv4 地址或 IPv6 /64 前缀，因此计数天然按来源去重。
  */
 export function getLoginThrottleAccountEdge(
   dbPath: string,

@@ -224,6 +224,54 @@ describe("login throttling per account across addresses", () => {
   });
 });
 
+describe("login throttling for IPv6 addresses", () => {
+  test("counts every address in one /64 as the same source for a username", async () => {
+    const { handle } = await setup();
+    for (let host = 1; host <= 5; host += 1) {
+      await loginFrom(handle, `2001:db8:1:2::${host}`, "alice", "wrong-password");
+    }
+
+    expect(
+      (await loginFrom(handle, "2001:db8:1:2:ffff::99", "alice", "alice-password")).status,
+    ).toBe(429);
+    expect((await loginFrom(handle, "2001:db8:1:3::1", "alice", "alice-password")).status).toBe(200);
+  });
+
+  test("counts every address in one /64 once for the address-wide limit", async () => {
+    const { handle } = await setup({ loginMaxFailuresPerIp: 3 });
+    await loginFrom(handle, "2001:db8:1:2::1", "alice", "wrong-password");
+    await loginFrom(handle, "2001:db8:1:2::2", "bob", "wrong-password");
+    await loginFrom(handle, "2001:db8:1:2::3", "carol", "wrong-password");
+
+    expect(
+      (await loginFrom(handle, "2001:db8:1:2::4", "alice", "alice-password")).status,
+    ).toBe(429);
+    expect(
+      (await loginFrom(handle, "2001:db8:1:9::4", "alice", "alice-password")).status,
+    ).toBe(200);
+  });
+
+  test("does not let addresses in one /64 lock an account by themselves", async () => {
+    const { handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    for (let host = 1; host <= 4; host += 1) {
+      await loginFrom(handle, `2001:db8:1:2::${host}`, "alice", "wrong-password");
+    }
+
+    expect((await loginFrom(handle, "2001:db8:7:7::1", "alice", "alice-password")).status).toBe(200);
+  });
+
+  test("locks an account once enough distinct IPv6 prefixes have failed", async () => {
+    const { handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    await loginFrom(handle, "2001:db8:1::1", "alice", "wrong-password");
+    await loginFrom(handle, "2001:db8:2::1", "alice", "wrong-password");
+    await loginFrom(handle, "2001:db8:3::1", "alice", "wrong-password");
+
+    const blocked = await loginFrom(handle, "2001:db8:4::1", "alice", "alice-password");
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBe("900");
+  });
+});
+
 describe("browser approval throttling", () => {
   test("remembers failed approvals across new browser sessions", async () => {
     const { context, handle } = await setup();
