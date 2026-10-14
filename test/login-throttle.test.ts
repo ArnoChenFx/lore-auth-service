@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
   createAuthSession,
@@ -452,12 +452,18 @@ describe("browser approval throttling", () => {
 describe("client address resolution for throttling", () => {
   test("ignores a forged X-Forwarded-For header when no proxy is trusted", async () => {
     const { handle } = await setup();
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      await loginForwardedFrom(handle, "10.0.0.1", `198.51.100.${attempt + 1}`, "alice", "wrong-password");
-    }
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await loginForwardedFrom(handle, "10.0.0.1", `198.51.100.${attempt + 1}`, "alice", "wrong-password");
+      }
 
-    const blocked = await loginForwardedFrom(handle, "10.0.0.1", "198.51.100.99", "alice", "alice-password");
-    expect(blocked.status).toBe(429);
+      const blocked = await loginForwardedFrom(handle, "10.0.0.1", "198.51.100.99", "alice", "alice-password");
+      expect(blocked.status).toBe(429);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("X-Forwarded-For header was present");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("keys attempts by the client address appended by the trusted proxy", async () => {

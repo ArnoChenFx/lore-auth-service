@@ -10,7 +10,7 @@ import { readFileSync } from "fs";
 import packageJson from "../package.json";
 import { handleAdminPanel } from "./admin-panel";
 import { isStandaloneExecutable } from "./build-environment";
-import { clientAddress } from "./client-address";
+import { clientAddress, trustedProxyWarning } from "./client-address";
 import { PUBLIC_ADMIN_PASSWORDS, loadConfig } from "./config";
 import type { AuthServiceContext } from "./context";
 import {
@@ -578,10 +578,18 @@ function tooManyAttemptsMessage(retryAfterSeconds: number): { en: string; zh: st
  * `startAuthService` 将它挂载到 Bun HTTP/HTTPS 服务。
  */
 export function createHttpHandler(context: AuthServiceContext) {
+  let proxyWarningIssued = false;
   return async (req: Request, peerAddress: string | null = null): Promise<Response> => {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method.toUpperCase();
+    if (!proxyWarningIssued) {
+      const warning = trustedProxyWarning(req, peerAddress, context.config.trustedProxyCount);
+      if (warning) {
+        proxyWarningIssued = true;
+        console.warn(warning);
+      }
+    }
     const address = clientAddress(req, peerAddress, context.config.trustedProxyCount);
 
     try {
@@ -780,6 +788,7 @@ Lore Auth Service started
   Issuer:      ${context.config.issuer}
   Audience:    ${context.config.audience.join(", ")}
   Database:    ${context.config.dbPath}
+  Proxies:     TRUSTED_PROXY_COUNT=${context.config.trustedProxyCount}
 `);
   if (!service.grpc.secure) {
     console.warn(

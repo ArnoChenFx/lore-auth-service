@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
   createResource,
@@ -283,6 +283,7 @@ describe("request body limits over HTTP", () => {
     const context = await createTestContext();
     createUser(context.config.dbPath, "alice", "alice-password", false);
     const service = await startAuthService(context);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const url = `http://127.0.0.1:${service.http.port}/auth/login`;
       const headers = { "content-type": "application/json" };
@@ -306,6 +307,7 @@ describe("request body limits over HTTP", () => {
       });
       expect(valid.status).toBe(200);
     } finally {
+      warn.mockRestore();
       await service.close();
     }
   });

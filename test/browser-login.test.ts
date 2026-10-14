@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { generateKeyPair } from "jose";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -71,6 +71,7 @@ describe("browser login flow", () => {
   test("starts the combined HTTP and gRPC service and reports healthy", async () => {
     const context = await createTestContext();
     const service = await startAuthService(context);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const response = await fetch(
         `http://127.0.0.1:${service.http.port}/health_check`,
@@ -81,6 +82,7 @@ describe("browser login flow", () => {
       expect(health.status).toBe("ok");
       expect(service.grpc.port).toBeGreaterThan(0);
     } finally {
+      warn.mockRestore();
       await service.close();
     }
   });

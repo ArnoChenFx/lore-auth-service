@@ -5,9 +5,28 @@
  * 并且只取最近一个可信代理追加的那一项，客户端自行放入的前缀不会影响结果。
  */
 
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 
 export const UNKNOWN_CLIENT_ADDRESS = "unknown";
+
+const NON_PUBLIC_IPV4 = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.168.0.0", 16],
+] as const) {
+  NON_PUBLIC_IPV4.addSubnet(network, prefix, "ipv4");
+}
+
+const NON_PUBLIC_IPV6 = new BlockList();
+NON_PUBLIC_IPV6.addAddress("::", "ipv6");
+NON_PUBLIC_IPV6.addAddress("::1", "ipv6");
+NON_PUBLIC_IPV6.addSubnet("fc00::", 7, "ipv6");
+NON_PUBLIC_IPV6.addSubnet("fe80::", 10, "ipv6");
 
 export function normalizeIp(value: string | null | undefined): string | null {
   const candidate = value?.trim().replace(/^\[(.*)\]$/, "$1");
@@ -76,4 +95,32 @@ export function clientAddress(
     if (candidate) return candidate;
   }
   return normalizeIp(peerAddress) ?? UNKNOWN_CLIENT_ADDRESS;
+}
+
+/**
+ * 私有、回环、链路本地、未指定或共享地址段（RFC 6598）。公网客户端不会以这些地址直接连接，
+ * 因此它们通常意味着请求经由同机或内网的反向代理转发。
+ */
+export function isNonPublicAddress(address: string | null): boolean {
+  const normalized = normalizeIp(address);
+  if (normalized === null) return false;
+  return isIP(normalized) === 4
+    ? NON_PUBLIC_IPV4.check(normalized, "ipv4")
+    : NON_PUBLIC_IPV6.check(normalized, "ipv6");
+}
+
+/**
+ * TRUSTED_PROXY_COUNT 为 0 而对端是非公网地址时，服务很可能位于反向代理之后，所有客户端都会按
+ * 代理地址被节流。启动时无法得知对端地址，因此由请求触发，调用方负责只记录一次。
+ */
+export function trustedProxyWarning(
+  req: Request,
+  peerAddress: string | null,
+  trustedProxyCount: number,
+): string | null {
+  if (trustedProxyCount > 0 || !isNonPublicAddress(peerAddress)) return null;
+  const ignoredHeader = req.headers.has("x-forwarded-for")
+    ? " An X-Forwarded-For header was present and ignored."
+    : "";
+  return `[proxy] Requests arrive from a non-public address while TRUSTED_PROXY_COUNT=0. If a reverse proxy sits in front of this service, every client is throttled as that proxy, so one client's failures can lock a username for everyone who uses the proxy. Set TRUSTED_PROXY_COUNT to the number of trusted proxies; see "Login throttling" in the README.${ignoredHeader}`;
 }

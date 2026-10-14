@@ -148,6 +148,7 @@ Important:
 - `JWT_ISSUER` must exactly match Lore Server's `server.auth.jwt_issuer`.
 - `JWT_AUDIENCE` is a comma-separated list and must contain the actual hostname used by the Lore Server remote URL, for example `lore.example.com`. Do not use an abstract value such as `lore-service`.
 - The certificate must cover the auth endpoint hostname. For an internal CA, install that CA in the trust store of every Lore Client and Lore Server machine.
+- **If a reverse proxy sits in front of this service, set `TRUSTED_PROXY_COUNT`** to the number of proxies. The default `0` makes every client look like the proxy, so one client's failed logins can lock a username for everyone behind it. See [Login throttling](#login-throttling).
 
 ### Lore Server configuration
 
@@ -429,7 +430,7 @@ Both services use the definitions in `proto/`:
 | `LOGIN_LOCK_BASE_SECONDS` | `60` | First login lock; doubles with each further failure |
 | `LOGIN_LOCK_MAX_SECONDS` | `900` | Upper bound for a login lock |
 | `LOGIN_RECENT_SUCCESS_SECONDS` | `2592000` | Sources with a successful login to an account within this many seconds are not blocked by that account's lock; `0` disables this exemption |
-| `TRUSTED_PROXY_COUNT` | `0` | Number of trusted reverse proxies in front of the service; see [Login throttling](#login-throttling) |
+| `TRUSTED_PROXY_COUNT` | `0` | Number of trusted reverse proxies in front of the service. **Set it when a proxy is in front**, or every client shares the proxy's throttling counters; see [Login throttling](#login-throttling) |
 | `KEY_DIR` | `./keys` | persisted RS256 key directory |
 | `DB_PATH` | `./lore-auth.db` | SQLite database |
 | `ADMIN_USERNAME` | `admin` | bootstrap administrator |
@@ -466,7 +467,9 @@ A counter restarts after one hour without a failure, or after `LOGIN_LOCK_MAX_SE
 
 **Sources that already sign in are not blocked by the account lock.** A source (an IPv4 address or an IPv6 /64 prefix) that logged in to an account successfully within `LOGIN_RECENT_SUCCESS_SECONDS` (30 days by default) can keep signing in while that account is locked for everyone. This keeps a user's usual device working during a distributed attack on the account. The exemption covers only the account-wide lock: the source's own username and address counters still apply, so it does not add guesses. It requires the correct password to have been accepted from that source, and it is removed when the user is deleted or the password is changed. The table `login_successes` stores a hash of each source, not the address. Sources that signed in before this version are not exempt until they sign in again. An attacker who can reach 50 distinct IPv4 addresses or /64 prefixes, and who has no recently successful source, still locks the account for 15 minutes at a time. Raise `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` to make that harder, or set `LOGIN_RECENT_SUCCESS_SECONDS=0` to remove the exemption.
 
-**Behind a reverse proxy**, set `TRUSTED_PROXY_COUNT` to the number of proxies in front of this service. Without it, every client appears to come from the proxy's address, so a username can be locked for everyone who uses that proxy. With it, the service reads the address that the nearest trusted proxy appended to `X-Forwarded-For`. Those proxies must overwrite or append that header on every request, and the service must be reachable only through them, because a client that connects directly can set the header itself. A value higher than the real number of proxies also lets clients forge their address.
+> **Behind a reverse proxy, set `TRUSTED_PROXY_COUNT`** to the number of proxies in front of this service. Left at `0`, every client appears to come from the proxy's address, so one client's failed logins can lock a username for everyone who uses that proxy. While `TRUSTED_PROXY_COUNT=0`, the service logs a `[proxy]` warning on the first request from a private or loopback address. Startup cannot make this check, because the client address is known only for each request.
+>
+> With the value set, the service reads the address that the nearest trusted proxy appended to `X-Forwarded-For`. Those proxies must overwrite or append that header on every request, and the service must be reachable only through them, because a client that connects directly can set the header itself. A value higher than the real number of proxies also lets clients forge their address.
 
 **Address-based limits are not identity.** IPv6 addresses are counted by their /64 prefix, so a client cannot escape a limit by changing addresses inside its /64. Many users can still share one NAT address or /64 prefix. Clients that share an address are throttled together, so one client can lock a username for the others behind that address. For shared egress addresses, raise `LOGIN_MAX_FAILURES_PER_USER_IP` and `LOGIN_MAX_FAILURES_PER_IP` rather than disabling those scopes. If the service sees one address for every client, the address scopes apply to all of them at once. Before exposing the service to users, make it see real client addresses through a reverse proxy that forwards them, with `TRUSTED_PROXY_COUNT` set.
 
