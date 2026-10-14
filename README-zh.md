@@ -53,7 +53,7 @@ cp .env.example .env
 bun run start
 ```
 
-第一次启动时，空数据库会创建配置中的管理员。`ADMIN_PASSWORD` 没有默认值：请把 `.env` 中的占位符替换为至少 8 位的唯一密码，否则服务拒绝启动。仅限本地临时调试时，可设置 `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true` 恢复旧的开发账号 `admin / changeme`。
+第一次启动时，空数据库会创建配置中的管理员。`ADMIN_PASSWORD` 没有默认值：请把 `.env` 中的占位符替换为你自己设定的至少 8 位密码，否则服务拒绝启动。仅限本地临时调试时，可设置 `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true` 并从 `.env` 中删除 `ADMIN_PASSWORD`，以创建旧的开发账号 `admin / changeme`。
 
 之后每次启动时，若管理员仍使用 `changeme` 或示例占位符，会被替换为当前 `ADMIN_PASSWORD`，并撤销该用户的 Refresh Token；其他密码不会被启动流程覆盖。
 
@@ -468,11 +468,17 @@ services:
 | `JWT_ISSUER` | `http://localhost:8080` | JWT `iss` |
 | `JWT_AUDIENCE` | `localhost` | 逗号分隔的 JWT 受众 |
 | `LORE_ENVIRONMENT` | `local` | JWT `env` Claim |
-| `TOKEN_TTL` | `864000` | JWT 有效期（秒，默认 10 天） |
+| `TOKEN_TTL` | `864000` | JWT 有效期（秒，默认 10 天）；参见 [Token 有效期](#token-有效期) |
 | `REFRESH_TOKEN_TTL` | `604800` | REST Refresh Token 有效期 |
 | `AUTH_SESSION_TTL` | `300` | 浏览器会话有效期 |
-| `AUTH_SESSION_MAX_ATTEMPTS` | `5` | 临时锁定前的失败次数 |
-| `AUTH_SESSION_LOCK_SECONDS` | `60` | 临时锁定时长 |
+| `AUTH_SESSION_MAX_ATTEMPTS` | `5` | 单个浏览器会话中审批失败多少次后，该会话被锁定 |
+| `AUTH_SESSION_LOCK_SECONDS` | `60` | 单个浏览器会话的锁定时长 |
+| `LOGIN_MAX_FAILURES_PER_USER_IP` | `5` | 同一来源对同一用户名的密码校验失败多少次后锁定；`0` 表示关闭 |
+| `LOGIN_MAX_FAILURES_PER_IP` | `100` | 同一来源跨用户名的密码校验失败多少次后锁定；成功登录不会清零；`0` 表示关闭 |
+| `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | 15 分钟内有多少个不同来源失败后，该账号对所有来源锁定；`0` 表示关闭，`1` 会被拒绝 |
+| `LOGIN_LOCK_BASE_SECONDS` | `60` | 首次登录锁定时长，之后每多失败一次翻倍 |
+| `LOGIN_LOCK_MAX_SECONDS` | `900` | 登录锁定时长上限 |
+| `TRUSTED_PROXY_COUNT` | `0` | 服务前可信反向代理的层数；参见 [登录失败节流](#登录失败节流) |
 | `KEY_DIR` | `./keys` | 持久化 RS256 密钥目录 |
 | `DB_PATH` | `./lore-auth.db` | SQLite 数据库 |
 | `ADMIN_USERNAME` | `admin` | 初始管理员 |
@@ -480,6 +486,43 @@ services:
 | `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD` | `false` | 仅限本地开发：允许使用内置 `changeme` 密码 |
 | `TLS_CERT_FILE` | 未配置 | HTTP 与 gRPC 使用的 PEM 证书链 |
 | `TLS_KEY_FILE` | 未配置 | HTTP 与 gRPC 使用的 PEM 私钥 |
+
+### Token 有效期
+
+`TOKEN_TTL` 默认为 `864000` 秒（10 天），使已登录的 Lore Client 无需每天重新在浏览器中登录。本项目固定的 Lore 客户端不会刷新浏览器会话（`RefreshAuthSession` 返回 `UNIMPLEMENTED`），因此 Token 过期后总需要重新登录。
+
+撤销账号的效果会在不同组件中以不同时间生效：
+
+- 删除用户会立即在本服务中生效。该用户的 Access Token 会被 `/auth/me`、管理 API，以及按用户表校验 Token 的 gRPC 调用（例如权限查询和 Token 交换）拒绝；其 Refresh Token 也会失效。本版本没有禁用状态，因此删除用户是撤销其访问权限的唯一方式。
+- Lore Server 使用 `/.well-known/jwks.json` 中的公钥离线校验 JWT。删除前签发的 Token（包括仓库范围的 AuthZ Token）会一直在 Lore Server 上有效，直到 `TOKEN_TTL` 到期。
+- 轮换或删除 `KEY_DIR` 会改变签名密钥，使所有 Token 同时失效。
+
+较短的有效期可以限制被移除或泄露的 Token 的可用时长，代价是浏览器登录更频繁。对于敏感部署，请将 `TOKEN_TTL` 设为 `28800`（8 小时）或更短；只有可以接受长时间保持登录时，才保留默认值。
+
+### 登录失败节流
+
+`/auth/login` 与浏览器授权页面的密码校验失败，会按三个维度计数：
+
+| 维度 | 配置项 | 默认值 | 超过阈值后的效果 |
+|---|---|---:|---|
+| 用户名 + 来源地址 | `LOGIN_MAX_FAILURES_PER_USER_IP` | `5` | 该来源对该用户名锁定。每多失败一次，锁定时长翻倍，从 `LOGIN_LOCK_BASE_SECONDS` 起，最长为 `LOGIN_LOCK_MAX_SECONDS`。 |
+| 来源地址 | `LOGIN_MAX_FAILURES_PER_IP` | `100` | 该来源对所有用户名的登录全部锁定。成功登录不会清零此计数。 |
+| 账号 | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | 15 分钟内有这么多不同来源失败过，该账号对所有来源锁定。 |
+
+被拒绝的请求返回 `429 Too Many Requests` 并附带 `Retry-After` 响应头。这些请求不会与密码比对，也不计为失败，因此持续猜测无法延长锁定时间。阈值为 `0` 时关闭对应维度。同一来源对同一账号只计一次，因此单个来源无法单独锁定他人的账号。来自足够多不同来源的失败仍可能使账号对所有人锁定，直到这些失败超过 15 分钟。因此 `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT=1` 会在启动时被拒绝。
+
+计数器在一小时内没有新的失败后重新开始；若 `LOGIN_LOCK_MAX_SECONDS` 更长，则以它为准。计数保存在 `DB_PATH` 所指数据库的 `login_throttles` 表中。
+
+**位于反向代理之后时**，请将 `TRUSTED_PROXY_COUNT` 设为服务前面可信反向代理的层数。否则所有客户端都会显示为代理的地址，同一个用户名可能被所有经由该代理访问的用户一起锁定。设置后，服务读取最近一个可信代理追加到 `X-Forwarded-For` 中的地址。这些代理必须在每个请求上覆盖或追加该响应头。若设置值超过实际代理层数，客户端即可伪造自己的地址。
+
+**基于地址的限制并不等同于身份。** IPv6 客户端可以使用其 /64 前缀内的任意地址，多名用户也可能共用同一个 NAT 地址。共用同一地址的客户端会被一起节流，因此一个客户端可能让同一地址之后的其他用户名被锁定。对于共享出口地址，请提高 `LOGIN_MAX_FAILURES_PER_USER_IP` 和 `LOGIN_MAX_FAILURES_PER_IP`，而不是关闭这些维度。若服务看到的所有客户端都是同一个地址，地址相关的限制会同时作用于所有人。在向用户开放之前，请通过会转发客户端地址的反向代理让服务看到真实地址，并设置 `TRUSTED_PROXY_COUNT`。
+
+### 升级注意事项
+
+- 启动本版本之前请设置 `ADMIN_PASSWORD`。若它未设置或少于 8 位，服务拒绝启动；`changeme` 与示例占位符等公开值同样会被拒绝，除非设置 `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true`。
+- 若已存储的管理员仍使用 `changeme` 或示例占位符，首次启动时会将其密码替换为 `ADMIN_PASSWORD`，并撤销该管理员的 Refresh Token。启动流程不会修改其他任何密码。
+- `login_throttles` 表会自动创建，无需手动迁移。
+- 若服务位于反向代理之后，请设置 `TRUSTED_PROXY_COUNT`。
 
 ## 验证
 
@@ -502,10 +545,12 @@ bun test
 - 密码使用带盐 scrypt；用户名不存在时也执行等价哈希计算。
 - 浏览器会话秘密值与 Refresh Token 只保存 SHA-256 哈希。
 - 浏览器会话短期有效，并同时绑定 `client_state` 与 `session_code`。
-- 登录失败按浏览器会话进行次数限制和临时锁定。
+- 密码校验失败按（用户名, 来源地址）、来源地址和账号三个维度节流，同时覆盖浏览器会话与 JSON 登录接口（参见 [登录失败节流](#登录失败节流)）。
+- 请求体限制为 JSON 64 KiB、浏览器表单 16 KiB。限制按实际收到的字节计算，因此 chunked 请求体同样受限，超出时返回 `413`。
 - JWT 与密码不会写入应用日志、浏览器 URL 或浏览器登录 HTML。
 - 浏览器页与管理页设置严格 CSP、防嵌入、禁止缓存和禁止 Referrer 响应头。
 - 删除 `KEY_DIR` 会轮换签名密钥，并使全部已签发 JWT 失效。
+- 已删除用户的 Access Token 会被本服务立即拒绝；Lore Server 在 `TOKEN_TTL` 到期前仍会接受它（参见 [Token 有效期](#token-有效期)）。
 
 ## 开源协议
 

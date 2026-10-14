@@ -53,7 +53,7 @@ cp .env.example .env
 bun run start
 ```
 
-On the first start, an empty database receives the configured administrator. `ADMIN_PASSWORD` has no default: replace the placeholder in `.env` with a unique password of at least 8 characters, or the service refuses to start. For a throwaway local instance only, `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true` restores the old development account `admin / changeme`.
+On the first start, an empty database receives the configured administrator. `ADMIN_PASSWORD` has no default: replace the placeholder in `.env` with your own password of at least 8 characters, or the service refuses to start. For a throwaway local instance only, set `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true` and remove `ADMIN_PASSWORD` from `.env` to create the old development account `admin / changeme`.
 
 On later starts, an administrator that still uses `changeme` or the example placeholder is switched to the current `ADMIN_PASSWORD`, and that user's refresh tokens are revoked. Any other password is never overwritten by startup.
 
@@ -418,11 +418,17 @@ Both services use the definitions in `proto/`:
 | `JWT_ISSUER` | `http://localhost:8080` | JWT `iss` |
 | `JWT_AUDIENCE` | `localhost` | Comma-separated JWT audiences |
 | `LORE_ENVIRONMENT` | `local` | JWT `env` claim |
-| `TOKEN_TTL` | `864000` | JWT lifetime in seconds (10 days by default) |
+| `TOKEN_TTL` | `864000` | JWT lifetime in seconds, 10 days by default; see [Token lifetime](#token-lifetime) |
 | `REFRESH_TOKEN_TTL` | `604800` | REST refresh-token lifetime |
 | `AUTH_SESSION_TTL` | `300` | Browser session lifetime |
-| `AUTH_SESSION_MAX_ATTEMPTS` | `5` | Failed logins before a temporary lock |
-| `AUTH_SESSION_LOCK_SECONDS` | `60` | Temporary lock duration |
+| `AUTH_SESSION_MAX_ATTEMPTS` | `5` | Failed approvals in one browser session before that session locks |
+| `AUTH_SESSION_LOCK_SECONDS` | `60` | Lock duration for one browser session |
+| `LOGIN_MAX_FAILURES_PER_USER_IP` | `5` | Failed password checks for one username from one address before a lock; `0` disables |
+| `LOGIN_MAX_FAILURES_PER_IP` | `100` | Failed password checks from one address across usernames before a lock; `0` disables |
+| `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | Distinct addresses that failed against one account within 15 minutes before it locks for everyone; `0` disables, `1` is refused |
+| `LOGIN_LOCK_BASE_SECONDS` | `60` | First login lock; doubles with each further failure |
+| `LOGIN_LOCK_MAX_SECONDS` | `900` | Upper bound for a login lock |
+| `TRUSTED_PROXY_COUNT` | `0` | Number of trusted reverse proxies in front of the service; see [Login throttling](#login-throttling) |
 | `KEY_DIR` | `./keys` | persisted RS256 key directory |
 | `DB_PATH` | `./lore-auth.db` | SQLite database |
 | `ADMIN_USERNAME` | `admin` | bootstrap administrator |
@@ -430,6 +436,43 @@ Both services use the definitions in `proto/`:
 | `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD` | `false` | local development only: permits the built-in `changeme` password |
 | `TLS_CERT_FILE` | unset | PEM certificate chain for HTTP and gRPC |
 | `TLS_KEY_FILE` | unset | PEM private key for HTTP and gRPC |
+
+### Token lifetime
+
+`TOKEN_TTL` defaults to `864000` seconds (10 days), so a signed-in Lore Client keeps working without a daily browser login. The fixed Lore client does not refresh browser sessions (`RefreshAuthSession` returns `UNIMPLEMENTED`), so an expired token always requires signing in again.
+
+Revoking an account reaches different components at different times:
+
+- Deleting a user takes effect immediately in this service. Its access tokens are rejected by `/auth/me`, the administration API, and the gRPC calls that check the token against the user table, such as permission lookups and token exchange. Its refresh tokens stop working. There is no disabled state, so deleting the user is the only way to revoke an account's access.
+- Lore Server validates JWTs offline with the keys from `/.well-known/jwks.json`. Tokens issued before the deletion, including repository-scoped tokens, keep working on Lore Server until they expire at `TOKEN_TTL`.
+- Rotating or deleting `KEY_DIR` invalidates every token at once, because the signing key changes.
+
+A shorter lifetime limits how long a removed or stolen token stays usable, at the cost of more frequent browser sign-ins. For sensitive deployments, set `TOKEN_TTL` to `28800` (eight hours) or less. Keep the default only when long sessions are acceptable.
+
+### Login throttling
+
+Password checks made through `/auth/login` and browser approval are counted in three scopes:
+
+| Scope | Setting | Default | Effect when exceeded |
+|---|---|---:|---|
+| Username and address | `LOGIN_MAX_FAILURES_PER_USER_IP` | `5` | Locks that username for that address. The lock doubles with each further failure, from `LOGIN_LOCK_BASE_SECONDS` up to `LOGIN_LOCK_MAX_SECONDS`. |
+| Address | `LOGIN_MAX_FAILURES_PER_IP` | `100` | Locks all logins from that address across usernames. Successful logins do not reset this count. |
+| Account | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | Locks the account for every address while that many different addresses have failed against it within 15 minutes. |
+
+A rejected attempt returns `429 Too Many Requests` with a `Retry-After` header. It is not checked against the password and is not counted as a failure, so continued guessing cannot extend the lock. A limit of `0` disables its scope. Each address counts once per account, so one address cannot lock another user's account by itself. Failures from enough distinct addresses can still lock an account for everyone, until those failures are 15 minutes old. For this reason `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT=1` is refused at startup.
+
+A counter restarts after one hour without a failure, or after `LOGIN_LOCK_MAX_SECONDS` if that is longer. Counters are stored in the `login_throttles` table of `DB_PATH`.
+
+**Behind a reverse proxy**, set `TRUSTED_PROXY_COUNT` to the number of proxies in front of this service. Without it, every client appears to come from the proxy's address, so a username can be locked for everyone who uses that proxy. With it, the service reads the address that the nearest trusted proxy appended to `X-Forwarded-For`. Those proxies must overwrite or append that header on every request. A value higher than the real number of proxies lets clients forge their address.
+
+**Address-based limits are not identity.** IPv6 clients can use any address in their /64 prefix, and many users can share one NAT address. Clients that share an address are throttled together, so one client can lock a username for the others behind that address. For shared egress addresses, raise `LOGIN_MAX_FAILURES_PER_USER_IP` and `LOGIN_MAX_FAILURES_PER_IP` rather than disabling those scopes. If the service sees one address for every client, the address scopes apply to all of them at once. Before exposing the service to users, make it see real client addresses through a reverse proxy that forwards them, with `TRUSTED_PROXY_COUNT` set.
+
+### Upgrading from earlier versions
+
+- Set `ADMIN_PASSWORD` before starting this version. The service refuses to start unless it is set to a password of at least 8 characters, and it refuses the publicly documented values `changeme` and the example placeholder unless `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true`.
+- If the stored administrator still uses `changeme` or the placeholder, the first start replaces that password with `ADMIN_PASSWORD` and revokes the administrator's refresh tokens. Startup never changes any other password.
+- The `login_throttles` table is created automatically. No manual migration is needed.
+- Set `TRUSTED_PROXY_COUNT` if the service sits behind a reverse proxy.
 
 ## Verification
 
@@ -452,10 +495,12 @@ The integration suite starts a real gRPC server and verifies:
 - Passwords use salted scrypt hashes; unknown users perform an equivalent hash operation.
 - Browser session secrets and refresh tokens are stored only as SHA-256 hashes.
 - Browser session URLs are short-lived and bound to both `client_state` and `session_code`.
-- Login attempts are rate-limited per browser session.
+- Password checks are throttled per username and address, per address, and per account, across browser sessions and the JSON login endpoint (see [Login throttling](#login-throttling)).
+- Request bodies are limited to 64 KiB for JSON and 16 KiB for browser forms. Limits count the bytes actually received, so chunked bodies are capped too, and larger bodies receive `413`.
 - JWTs and passwords are not written to application logs, browser URLs, or browser login HTML.
 - Browser and administration pages set restrictive CSP, anti-framing, no-cache, and no-referrer headers.
 - Removing `KEY_DIR` rotates the signing key and invalidates all issued JWTs.
+- A deleted user's access token is rejected by this service at once. Lore Server accepts it until `TOKEN_TTL` expires (see [Token lifetime](#token-lifetime)).
 
 ## License
 
