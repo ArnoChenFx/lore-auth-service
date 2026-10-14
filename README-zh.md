@@ -478,6 +478,7 @@ services:
 | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | 15 分钟内有多少个不同来源失败后，该账号对所有来源锁定；`0` 表示关闭，`1` 会被拒绝 |
 | `LOGIN_LOCK_BASE_SECONDS` | `60` | 首次登录锁定时长，之后每多失败一次翻倍 |
 | `LOGIN_LOCK_MAX_SECONDS` | `900` | 登录锁定时长上限 |
+| `LOGIN_RECENT_SUCCESS_SECONDS` | `2592000` | 在该时长内曾成功登录该账号的来源，不受该账号的锁定影响；`0` 关闭此豁免 |
 | `TRUSTED_PROXY_COUNT` | `0` | 服务前可信反向代理的层数；参见 [登录失败节流](#登录失败节流) |
 | `KEY_DIR` | `./keys` | 持久化 RS256 密钥目录 |
 | `DB_PATH` | `./lore-auth.db` | SQLite 数据库 |
@@ -507,11 +508,13 @@ services:
 |---|---|---:|---|
 | 用户名 + 来源地址 | `LOGIN_MAX_FAILURES_PER_USER_IP` | `5` | 该来源对该用户名锁定。每多失败一次，锁定时长翻倍，从 `LOGIN_LOCK_BASE_SECONDS` 起，最长为 `LOGIN_LOCK_MAX_SECONDS`。 |
 | 来源地址 | `LOGIN_MAX_FAILURES_PER_IP` | `100` | 该来源对所有用户名的登录全部锁定。IPv6 按 /64 前缀计为同一来源。成功登录不会清零此计数。 |
-| 账号 | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | 15 分钟内有这么多不同来源失败过，该账号对所有来源锁定。 |
+| 账号 | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | 15 分钟内有这么多不同来源失败过，该账号对所有来源锁定。近期曾成功登录该账号的来源不受此锁定影响（见下文）。 |
 
 被拒绝的请求返回 `429 Too Many Requests` 并附带 `Retry-After` 响应头。这些请求不会与密码比对，也不计为失败，因此持续猜测无法延长锁定时间。阈值为 `0` 时关闭对应维度。同一来源（IPv6 为其 /64 前缀）对同一账号只计一次，因此单个来源无法单独锁定他人的账号。来自足够多不同来源的失败仍可能使账号对所有人锁定，直到这些失败超过 15 分钟。因此 `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT=1` 会在启动时被拒绝。
 
 计数器在一小时内没有新的失败后重新开始；若 `LOGIN_LOCK_MAX_SECONDS` 更长，则以它为准。计数保存在 `DB_PATH` 所指数据库的 `login_throttles` 表中。
+
+**已经能够登录的来源不受账号级锁定影响。** 在 `LOGIN_RECENT_SUCCESS_SECONDS`（默认 30 天）内曾成功登录该账号的来源（IPv4 地址，或 IPv6 的 /64 前缀），在该账号对所有人锁定期间仍可继续登录。这样，在针对账号的分布式攻击期间，用户常用的设备仍能使用。该豁免只作用于账号级锁定：来源自身的（用户名, 来源）与来源计数仍然生效，因此不会增加猜测次数。它要求该来源曾通过正确密码认证，并且在删除用户或修改密码时被移除。`login_successes` 表保存的是来源的哈希而非原始地址。升级前已经登录过的来源，需要在升级后重新登录一次才能获得豁免。能够从 50 个不同 IPv4 地址或 /64 前缀失败、且没有近期成功来源的攻击者，仍可使该账号每次锁定 15 分钟。若要提高难度，可增大 `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT`；若要取消此豁免，请设置 `LOGIN_RECENT_SUCCESS_SECONDS=0`。
 
 **位于反向代理之后时**，请将 `TRUSTED_PROXY_COUNT` 设为服务前面可信反向代理的层数。否则所有客户端都会显示为代理的地址，同一个用户名可能被所有经由该代理访问的用户一起锁定。设置后，服务读取最近一个可信代理追加到 `X-Forwarded-For` 中的地址。这些代理必须在每个请求上覆盖或追加该响应头，并且服务只能经由这些代理访问，否则直连的客户端可以自行设置该响应头。若设置值超过实际代理层数，客户端同样可以伪造自己的地址。
 
@@ -521,7 +524,7 @@ services:
 
 - 启动本版本之前请设置 `ADMIN_PASSWORD`。若它未设置或少于 8 位，服务拒绝启动；`changeme` 与示例占位符等公开值同样会被拒绝，除非设置 `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true`。
 - 若已存储的管理员仍使用 `changeme` 或示例占位符，首次启动时会将其密码替换为 `ADMIN_PASSWORD`，并撤销该管理员的 Refresh Token。启动流程不会修改其他任何密码。
-- `login_throttles` 表会自动创建，无需手动迁移。
+- `login_throttles` 与 `login_successes` 表会自动创建，无需手动迁移。升级前已登录过的来源，需要在升级后重新登录一次，才能免除账号级锁定。
 - 若服务位于反向代理之后，请设置 `TRUSTED_PROXY_COUNT`。
 
 ## 验证

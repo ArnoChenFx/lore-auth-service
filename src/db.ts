@@ -184,6 +184,17 @@ function initializeSchema(connection: Database): void {
       ON login_throttles(scope, account_hash, last_failure_ms);
     CREATE INDEX IF NOT EXISTS idx_login_throttles_recent
       ON login_throttles(last_failure_ms);
+
+    CREATE TABLE IF NOT EXISTS login_successes (
+      user_id         INTEGER NOT NULL,
+      source_hash     TEXT NOT NULL,
+      last_success_ms INTEGER NOT NULL,
+      PRIMARY KEY (user_id, source_hash),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_login_successes_recent
+      ON login_successes(last_success_ms);
   `);
 }
 
@@ -278,7 +289,10 @@ export function deleteUser(dbPath: string, username: string): boolean {
   return result.changes > 0;
 }
 
-/** 替换密码并撤销该用户所有 Refresh Token，使旧凭据无法继续续期。 */
+/**
+ * 替换密码并撤销该用户所有 Refresh Token，使旧凭据无法继续续期；同时清除依赖旧凭据建立的
+ * 账号级锁定豁免。
+ */
 export function setUserPassword(dbPath: string, userId: number, password: string): void {
   if (password.length < 8) {
     throw new Error("Password must contain at least 8 characters");
@@ -290,6 +304,7 @@ export function setUserPassword(dbPath: string, userId: number, password: string
       userId,
     ]);
     revokeAllUserRefreshTokens(dbPath, userId);
+    clearLoginSuccessSources(dbPath, userId);
   });
   transaction();
 }
@@ -528,6 +543,47 @@ export function getLoginThrottleAccountEdge(
 
 export function pruneLoginThrottles(dbPath: string, beforeMs: number): void {
   getDb(dbPath).run("DELETE FROM login_throttles WHERE last_failure_ms <= ?", [beforeMs]);
+}
+
+// ─── 账号级锁定豁免：近期在该账号上成功登录过的来源 ─────────────────────────
+
+/** 来源以 throttleSource 归一后的哈希保存，不含原始 IP。用户删除时由外键级联清除。 */
+export function recordLoginSuccessSource(
+  dbPath: string,
+  userId: number,
+  sourceHash: string,
+  nowMs: number,
+): void {
+  getDb(dbPath).run(
+    `INSERT INTO login_successes (user_id, source_hash, last_success_ms)
+     VALUES (?, ?, ?)
+     ON CONFLICT (user_id, source_hash) DO UPDATE SET
+       last_success_ms = excluded.last_success_ms`,
+    [userId, sourceHash, nowMs],
+  );
+}
+
+export function hasRecentLoginSuccessSource(
+  dbPath: string,
+  userId: number,
+  sourceHash: string,
+  sinceMs: number,
+): boolean {
+  return (
+    getDb(dbPath)
+      .query(
+        "SELECT 1 FROM login_successes WHERE user_id = ? AND source_hash = ? AND last_success_ms > ?",
+      )
+      .get(userId, sourceHash, sinceMs) !== null
+  );
+}
+
+export function pruneLoginSuccessSources(dbPath: string, beforeMs: number): void {
+  getDb(dbPath).run("DELETE FROM login_successes WHERE last_success_ms <= ?", [beforeMs]);
+}
+
+export function clearLoginSuccessSources(dbPath: string, userId: number): void {
+  getDb(dbPath).run("DELETE FROM login_successes WHERE user_id = ?", [userId]);
 }
 
 // ─── Lore 资源与权限 ───────────────────────────────────────────────────────

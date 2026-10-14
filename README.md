@@ -428,6 +428,7 @@ Both services use the definitions in `proto/`:
 | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | Distinct addresses that failed against one account within 15 minutes before it locks for everyone; `0` disables, `1` is refused |
 | `LOGIN_LOCK_BASE_SECONDS` | `60` | First login lock; doubles with each further failure |
 | `LOGIN_LOCK_MAX_SECONDS` | `900` | Upper bound for a login lock |
+| `LOGIN_RECENT_SUCCESS_SECONDS` | `2592000` | Sources with a successful login to an account within this many seconds are not blocked by that account's lock; `0` disables this exemption |
 | `TRUSTED_PROXY_COUNT` | `0` | Number of trusted reverse proxies in front of the service; see [Login throttling](#login-throttling) |
 | `KEY_DIR` | `./keys` | persisted RS256 key directory |
 | `DB_PATH` | `./lore-auth.db` | SQLite database |
@@ -457,11 +458,13 @@ Password checks made through `/auth/login` and browser approval are counted in t
 |---|---|---:|---|
 | Username and address | `LOGIN_MAX_FAILURES_PER_USER_IP` | `5` | Locks that username for that address. The lock doubles with each further failure, from `LOGIN_LOCK_BASE_SECONDS` up to `LOGIN_LOCK_MAX_SECONDS`. |
 | Address | `LOGIN_MAX_FAILURES_PER_IP` | `100` | Locks all logins from that address across usernames. An IPv6 address counts as its /64 prefix. Successful logins do not reset this count. |
-| Account | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | Locks the account for every address while that many different addresses have failed against it within 15 minutes. |
+| Account | `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` | `50` | Locks the account for every address while that many different addresses have failed against it within 15 minutes. Sources with a recent successful login for the account are exempt (see below). |
 
 A rejected attempt returns `429 Too Many Requests` with a `Retry-After` header. It is not checked against the password and is not counted as a failure, so continued guessing cannot extend the lock. A limit of `0` disables its scope. Each address counts once per account, and an IPv6 address counts as its /64 prefix, so one address (or one /64) cannot lock another user's account by itself. Failures from enough distinct addresses can still lock an account for everyone, until those failures are 15 minutes old. For this reason `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT=1` is refused at startup.
 
 A counter restarts after one hour without a failure, or after `LOGIN_LOCK_MAX_SECONDS` if that is longer. Counters are stored in the `login_throttles` table of `DB_PATH`.
+
+**Sources that already sign in are not blocked by the account lock.** A source (an IPv4 address or an IPv6 /64 prefix) that logged in to an account successfully within `LOGIN_RECENT_SUCCESS_SECONDS` (30 days by default) can keep signing in while that account is locked for everyone. This keeps a user's usual device working during a distributed attack on the account. The exemption covers only the account-wide lock: the source's own username and address counters still apply, so it does not add guesses. It requires the correct password to have been accepted from that source, and it is removed when the user is deleted or the password is changed. The table `login_successes` stores a hash of each source, not the address. Sources that signed in before this version are not exempt until they sign in again. An attacker who can reach 50 distinct IPv4 addresses or /64 prefixes, and who has no recently successful source, still locks the account for 15 minutes at a time. Raise `LOGIN_MAX_FAILING_IPS_PER_ACCOUNT` to make that harder, or set `LOGIN_RECENT_SUCCESS_SECONDS=0` to remove the exemption.
 
 **Behind a reverse proxy**, set `TRUSTED_PROXY_COUNT` to the number of proxies in front of this service. Without it, every client appears to come from the proxy's address, so a username can be locked for everyone who uses that proxy. With it, the service reads the address that the nearest trusted proxy appended to `X-Forwarded-For`. Those proxies must overwrite or append that header on every request, and the service must be reachable only through them, because a client that connects directly can set the header itself. A value higher than the real number of proxies also lets clients forge their address.
 
@@ -471,7 +474,7 @@ A counter restarts after one hour without a failure, or after `LOGIN_LOCK_MAX_SE
 
 - Set `ADMIN_PASSWORD` before starting this version. The service refuses to start unless it is set to a password of at least 8 characters, and it refuses the publicly documented values `changeme` and the example placeholder unless `ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD=true`.
 - If the stored administrator still uses `changeme` or the placeholder, the first start replaces that password with `ADMIN_PASSWORD` and revokes the administrator's refresh tokens. Startup never changes any other password.
-- The `login_throttles` table is created automatically. No manual migration is needed.
+- The `login_throttles` and `login_successes` tables are created automatically. No manual migration is needed. Sources that signed in before this version are exempt from an account lock only after they sign in again.
 - Set `TRUSTED_PROXY_COUNT` if the service sits behind a reverse proxy.
 
 ## Verification

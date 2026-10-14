@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { createAuthSession, createUser } from "../src/db";
+import {
+  createAuthSession,
+  createUser,
+  deleteUser,
+  getUserByUsername,
+  setUserPassword,
+} from "../src/db";
 import { createHttpHandler } from "../src/index";
 import type { AppConfig } from "../src/config";
 import type { AuthServiceContext } from "../src/context";
@@ -221,6 +227,101 @@ describe("login throttling per account across addresses", () => {
     }
 
     expect((await loginFrom(handle, "203.0.113.100", "alice", "alice-password")).status).toBe(200);
+  });
+});
+
+describe("account lock exemption for sources that logged in recently", () => {
+  async function failFromOtherSources(handle: Handler, username: string): Promise<void> {
+    for (const address of ["203.0.113.151", "203.0.113.152", "203.0.113.153"]) {
+      await loginFrom(handle, address, username, "wrong-password");
+    }
+  }
+
+  test("does not apply the account lock to a source that logged in recently", async () => {
+    const { handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(200);
+    await failFromOtherSources(handle, "alice");
+
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(200);
+    expect((await loginFrom(handle, "203.0.113.154", "alice", "alice-password")).status).toBe(429);
+  });
+
+  test("grants the exemption after a successful browser approval", async () => {
+    const { context, handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    expect(
+      (await approveFrom(context, handle, "203.0.113.160", "alice", "alice-password")).status,
+    ).toBe(200);
+    await failFromOtherSources(handle, "alice");
+
+    expect((await loginFrom(handle, "203.0.113.160", "alice", "alice-password")).status).toBe(200);
+  });
+
+  test("keeps the account lock for a source whose last login is outside the window", async () => {
+    const { handle, clock } = await setup({
+      loginMaxFailingIpsPerAccount: 3,
+      loginRecentSuccessSeconds: 3600,
+    });
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(200);
+    clock.now += 2 * ONE_HOUR_MS;
+    await failFromOtherSources(handle, "alice");
+
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(429);
+  });
+
+  test("keeps the account lock for a source that only logged in to another account", async () => {
+    const { handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    expect((await loginFrom(handle, "203.0.113.150", "bob", "bob-password")).status).toBe(200);
+    await failFromOtherSources(handle, "alice");
+
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(429);
+  });
+
+  test("does not let an exempt source skip its own backoff", async () => {
+    const { handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(200);
+    await failFromOtherSources(handle, "alice");
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await loginFrom(handle, "203.0.113.150", "alice", "wrong-password")).status).toBe(401);
+    }
+    const blocked = await loginFrom(handle, "203.0.113.150", "alice", "alice-password");
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("Retry-After")).toBe("60");
+  });
+
+  test("turns the exemption off when the window is zero", async () => {
+    const { handle } = await setup({
+      loginMaxFailingIpsPerAccount: 3,
+      loginRecentSuccessSeconds: 0,
+    });
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(200);
+    await failFromOtherSources(handle, "alice");
+
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(429);
+  });
+
+  test("does not carry the exemption over to a user re-created with the same name", async () => {
+    const { context, handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(200);
+    deleteUser(context.config.dbPath, "alice");
+    createUser(context.config.dbPath, "alice", "new-alice-password", false);
+    await failFromOtherSources(handle, "alice");
+
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "new-alice-password")).status).toBe(
+      429,
+    );
+  });
+
+  test("removes the exemption when the password is changed", async () => {
+    const { context, handle } = await setup({ loginMaxFailingIpsPerAccount: 3 });
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "alice-password")).status).toBe(200);
+    const alice = getUserByUsername(context.config.dbPath, "alice");
+    setUserPassword(context.config.dbPath, alice!.id, "new-alice-password");
+    await failFromOtherSources(handle, "alice");
+
+    expect((await loginFrom(handle, "203.0.113.150", "alice", "new-alice-password")).status).toBe(
+      429,
+    );
   });
 });
 

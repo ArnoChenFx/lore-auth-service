@@ -37,6 +37,7 @@ const config: AppConfig = {
   loginMaxFailingIpsPerAccount: 50,
   loginLockBaseSeconds: 60,
   loginLockMaxSeconds: 900,
+  loginRecentSuccessSeconds: 2592000,
   trustedProxyCount: 0,
   keyDir: "./unused-test-keys",
   dbPath: ":memory:",

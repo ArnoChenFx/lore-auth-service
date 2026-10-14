@@ -68,6 +68,7 @@ beforeAll(async () => {
     loginMaxFailingIpsPerAccount: 50,
     loginLockBaseSeconds: 60,
     loginLockMaxSeconds: 900,
+    loginRecentSuccessSeconds: 2592000,
     trustedProxyCount: 0,
     keyDir: join(directory, "unused-keys"),
     dbPath,

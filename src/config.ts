@@ -21,6 +21,7 @@ export interface AppConfig {
   loginMaxFailingIpsPerAccount: number;
   loginLockBaseSeconds: number;
   loginLockMaxSeconds: number;
+  loginRecentSuccessSeconds: number;
   trustedProxyCount: number;
   keyDir: string;
   dbPath: string;
@@ -142,6 +143,8 @@ export function loadConfig(): AppConfig {
     loginMaxFailingIpsPerAccount: envInt("LOGIN_MAX_FAILING_IPS_PER_ACCOUNT", 50),
     loginLockBaseSeconds: envInt("LOGIN_LOCK_BASE_SECONDS", 60),
     loginLockMaxSeconds: envInt("LOGIN_LOCK_MAX_SECONDS", 900),
+    // 账号级锁定不阻止近期在该账号上成功登录过的来源；默认 30 天，0 表示关闭此豁免。
+    loginRecentSuccessSeconds: envInt("LOGIN_RECENT_SUCCESS_SECONDS", 30 * 24 * 60 * 60),
     // 须与实际部署的可信反向代理层数一致；设置过大时，客户端可伪造 X-Forwarded-For 绕过按 IP 的限制。
     trustedProxyCount: envInt("TRUSTED_PROXY_COUNT", 0),
     keyDir: env("KEY_DIR", "./keys"),
@@ -176,6 +179,7 @@ export function loadConfig(): AppConfig {
   if (config.loginLockMaxSeconds < config.loginLockBaseSeconds) {
     throw new Error("LOGIN_LOCK_MAX_SECONDS must not be smaller than LOGIN_LOCK_BASE_SECONDS");
   }
+  assertNonNegative("LOGIN_RECENT_SUCCESS_SECONDS", config.loginRecentSuccessSeconds);
   assertNonNegative("TRUSTED_PROXY_COUNT", config.trustedProxyCount);
   assertHttpUrl("JWT_ISSUER", config.issuer);
   assertHttpUrl("PUBLIC_BASE_URL", config.publicBaseUrl);

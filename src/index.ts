@@ -60,6 +60,7 @@ import {
   clearLoginFailures,
   loginThrottlePolicy,
   recordLoginFailure,
+  recordLoginSuccess,
 } from "./login-throttle";
 
 export interface RunningAuthService {
@@ -234,6 +235,7 @@ async function handleLogin(
     return errorResponse("Invalid username or password", 401);
   }
   clearLoginFailures(context.config.dbPath, normalizedUsername, address);
+  recordLoginSuccess(context.config.dbPath, policy, authenticated.id, address, nowMs);
 
   const accessToken = await issueAuthenticationToken(
     context.keys,
@@ -527,6 +529,7 @@ async function handleBrowserSessionApproval(
   );
   if (result.ok) {
     clearLoginFailures(context.config.dbPath, username, address);
+    recordLoginSuccess(context.config.dbPath, policy, result.user.id, address, nowMs);
     return html(renderLoginSuccess(result.user.username));
   }
   if (result.credentialChecked) {

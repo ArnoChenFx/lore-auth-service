@@ -21,6 +21,7 @@ const CONFIG_ENV_KEYS = [
   "LOGIN_MAX_FAILING_IPS_PER_ACCOUNT",
   "LOGIN_LOCK_BASE_SECONDS",
   "LOGIN_LOCK_MAX_SECONDS",
+  "LOGIN_RECENT_SUCCESS_SECONDS",
   "TRUSTED_PROXY_COUNT",
   "KEY_DIR",
   "DB_PATH",
@@ -121,6 +122,7 @@ describe("login throttling configuration", () => {
     expect(config.loginMaxFailingIpsPerAccount).toBe(50);
     expect(config.loginLockBaseSeconds).toBe(60);
     expect(config.loginLockMaxSeconds).toBe(900);
+    expect(config.loginRecentSuccessSeconds).toBe(30 * 24 * 60 * 60);
     expect(config.trustedProxyCount).toBe(0);
   });
 
@@ -155,6 +157,13 @@ describe("login throttling configuration", () => {
     expect(() => loadConfig()).toThrow("must not be smaller than LOGIN_LOCK_BASE_SECONDS");
 
     process.env.LOGIN_LOCK_BASE_SECONDS = "60";
+    process.env.LOGIN_RECENT_SUCCESS_SECONDS = "-1";
+    expect(() => loadConfig()).toThrow("LOGIN_RECENT_SUCCESS_SECONDS must be a non-negative integer");
+
+    process.env.LOGIN_RECENT_SUCCESS_SECONDS = "0";
+    expect(loadConfig().loginRecentSuccessSeconds).toBe(0);
+
+    process.env.LOGIN_RECENT_SUCCESS_SECONDS = "60";
     process.env.TRUSTED_PROXY_COUNT = "-2";
     expect(() => loadConfig()).toThrow("TRUSTED_PROXY_COUNT must be a non-negative integer");
   });
