@@ -6,4 +6,6 @@ export interface AuthServiceContext {
   config: AppConfig;
   keys: KeyMaterial;
   jwks: { keys: unknown[] };
+  /** 仅测试注入使用；登录节流的时间窗口据此推进，缺省为 Date.now。 */
+  now?: () => number;
 }

@@ -10,7 +10,8 @@ import { readFileSync } from "fs";
 import packageJson from "../package.json";
 import { handleAdminPanel } from "./admin-panel";
 import { isStandaloneExecutable } from "./build-environment";
-import { loadConfig } from "./config";
+import { clientAddress, trustedProxyWarning } from "./client-address";
+import { PUBLIC_ADMIN_PASSWORDS, loadConfig } from "./config";
 import type { AuthServiceContext } from "./context";
 import {
   OWNER_PERMISSIONS,
@@ -30,7 +31,9 @@ import {
   listResources,
   listUsers,
   revokeRefreshToken,
+  setUserPassword,
   setUserResourcePermissions,
+  type User,
   userCount,
 } from "./db";
 import {
@@ -52,6 +55,13 @@ import {
   renderLoginPage,
   renderLoginSuccess,
 } from "./login-page";
+import {
+  checkLoginAllowed,
+  clearLoginFailures,
+  loginThrottlePolicy,
+  recordLoginFailure,
+  recordLoginSuccess,
+} from "./login-throttle";
 
 export interface RunningAuthService {
   context: AuthServiceContext;
@@ -60,18 +70,19 @@ export interface RunningAuthService {
   close(): Promise<void>;
 }
 
-function json(data: unknown, status = 200): Response {
+function json(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
+      ...headers,
     },
   });
 }
 
-function html(content: string, status = 200): Response {
+function html(content: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(content, {
     status,
     headers: {
@@ -82,28 +93,94 @@ function html(content: string, status = 200): Response {
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
+      ...headers,
     },
   });
 }
 
-function errorResponse(message: string, status = 400): Response {
-  return json({ error: message }, status);
+function errorResponse(
+  message: string,
+  status = 400,
+  headers: Record<string, string> = {},
+): Response {
+  return json({ error: message }, status, headers);
 }
 
-async function parseJsonBody(req: Request): Promise<Record<string, unknown> | null> {
-  const length = Number(req.headers.get("content-length") ?? "0");
-  if (length > 64 * 1024) return null;
-  try {
-    return (await req.json()) as Record<string, unknown>;
-  } catch {
-    return null;
+function currentTimeMs(context: AuthServiceContext): number {
+  return context.now?.() ?? Date.now();
+}
+
+const JSON_BODY_LIMIT_BYTES = 64 * 1024;
+const FORM_BODY_LIMIT_BYTES = 16 * 1024;
+
+type BodyParseResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: "too_large" | "invalid" };
+
+/**
+ * 按实际收到的字节数限制请求体，不信任 Content-Length。Chunked 请求没有长度声明，
+ * 必须在累计字节超过上限时立即停止读取，否则会先把整个请求放入内存。
+ */
+async function readBodyWithLimit(
+  req: Request,
+  limitBytes: number,
+): Promise<Uint8Array | "too_large"> {
+  const declared = req.headers.get("content-length");
+  if (declared !== null && Number(declared) > limitBytes) {
+    await req.body?.cancel().catch(() => undefined);
+    return "too_large";
   }
+  if (!req.body) return new Uint8Array(0);
+
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limitBytes) {
+      await reader.cancel().catch(() => undefined);
+      return "too_large";
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
-async function parseFormBody(req: Request): Promise<Record<string, string> | null> {
-  const length = Number(req.headers.get("content-length") ?? "0");
-  if (length > 16 * 1024) return null;
+async function parseJsonBody(req: Request): Promise<BodyParseResult<Record<string, unknown>>> {
+  const bytes = await readBodyWithLimit(req, JSON_BODY_LIMIT_BYTES);
+  if (bytes === "too_large") return { ok: false, reason: "too_large" };
 
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true, value: value as Record<string, unknown> };
+}
+
+function jsonBodyError(reason: "too_large" | "invalid"): Response {
+  return reason === "too_large"
+    ? errorResponse(
+        `Request body is larger than the ${JSON_BODY_LIMIT_BYTES}-byte (${JSON_BODY_LIMIT_BYTES / 1024} KiB) limit`,
+        413,
+      )
+    : errorResponse("Request body must be a JSON object", 400);
+}
+
+async function parseFormBody(req: Request): Promise<BodyParseResult<Record<string, string>>> {
   // 浏览器原生登录表单没有文件字段，固定使用 URL 编码。服务端不接受 multipart，
   // 因而无需调用 Bun 已弃用的 `formData()`，也不需要引入流式文件上传解析器。
   const contentType = req.headers
@@ -111,27 +188,54 @@ async function parseFormBody(req: Request): Promise<Record<string, string> | nul
     ?.split(";", 1)[0]
     ?.trim()
     .toLowerCase();
-  if (contentType !== "application/x-www-form-urlencoded") return null;
-
-  try {
-    const encoded = await req.text();
-    // Content-Length 可能缺失或不可信，因此读取后再次按 UTF-8 实际字节数限制。
-    if (new TextEncoder().encode(encoded).byteLength > 16 * 1024) return null;
-    return Object.fromEntries(new URLSearchParams(encoded));
-  } catch {
-    return null;
+  if (contentType !== "application/x-www-form-urlencoded") {
+    return { ok: false, reason: "invalid" };
   }
+
+  const bytes = await readBodyWithLimit(req, FORM_BODY_LIMIT_BYTES);
+  if (bytes === "too_large") return { ok: false, reason: "too_large" };
+  const encoded = new TextDecoder().decode(bytes);
+  return { ok: true, value: Object.fromEntries(new URLSearchParams(encoded)) };
 }
 
-async function handleLogin(context: AuthServiceContext, req: Request): Promise<Response> {
-  const body = await parseJsonBody(req);
-  const username = typeof body?.username === "string" ? body.username : "";
-  const password = typeof body?.password === "string" ? body.password : "";
+async function handleLogin(
+  context: AuthServiceContext,
+  req: Request,
+  address: string,
+): Promise<Response> {
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const body = parsed.value;
+  const username = typeof body.username === "string" ? body.username : "";
+  const password = typeof body.password === "string" ? body.password : "";
   if (!username || !password) return errorResponse("Missing username or password", 400);
+
+  const policy = loginThrottlePolicy(context.config);
+  const normalizedUsername = username.trim();
+  const nowMs = currentTimeMs(context);
+  const gate = checkLoginAllowed(
+    context.config.dbPath,
+    policy,
+    normalizedUsername,
+    address,
+    nowMs,
+  );
+  if (!gate.allowed) {
+    return errorResponse(
+      `Too many failed login attempts. Try again in ${gate.retryAfterSeconds} seconds.`,
+      429,
+      { "Retry-After": String(gate.retryAfterSeconds) },
+    );
+  }
 
   // 复用数据库认证函数的恒定时间哈希比较，同时保持外部错误不可枚举用户。
   const authenticated = authenticate(context.config.dbPath, username, password);
-  if (!authenticated) return errorResponse("Invalid username or password", 401);
+  if (!authenticated) {
+    recordLoginFailure(context.config.dbPath, policy, normalizedUsername, address, nowMs);
+    return errorResponse("Invalid username or password", 401);
+  }
+  clearLoginFailures(context.config.dbPath, normalizedUsername, address);
+  recordLoginSuccess(context.config.dbPath, policy, authenticated.id, address, nowMs);
 
   const accessToken = await issueAuthenticationToken(
     context.keys,
@@ -164,9 +268,10 @@ async function handleRefreshToken(
   context: AuthServiceContext,
   req: Request,
 ): Promise<Response> {
-  const body = await parseJsonBody(req);
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
   const rawRefreshToken =
-    typeof body?.refresh_token === "string" ? body.refresh_token : "";
+    typeof parsed.value.refresh_token === "string" ? parsed.value.refresh_token : "";
   if (!rawRefreshToken) return errorResponse("Missing refresh_token", 400);
 
   const tokenHash = hashRefreshToken(rawRefreshToken);
@@ -197,12 +302,33 @@ async function handleRefreshToken(
   });
 }
 
-async function handleMe(context: AuthServiceContext, req: Request): Promise<Response> {
+type BearerAuthResult =
+  | { ok: true; payload: TokenPayload; user: User }
+  | { ok: false; message: string };
+
+/**
+ * 签名有效只说明 Token 曾由本服务签发，不代表账号仍然存在。这里以 Token 的 `sub`
+ * 对应的数据库用户为准，并按 ID 而非用户名查找，避免删除后同名新用户继承旧 Token。
+ */
+async function authenticateBearer(
+  context: AuthServiceContext,
+  req: Request,
+): Promise<BearerAuthResult> {
   const token = extractBearerToken(req.headers.get("Authorization"));
-  if (!token) return errorResponse("Missing Authorization Bearer token", 401);
+  if (!token) return { ok: false, message: "Missing Authorization Bearer token" };
   const payload = await verifyToken(context.keys, context.config, token);
-  if (!payload) return errorResponse("Token is invalid or expired", 401);
-  return json({ user: payload });
+  if (!payload || !/^\d+$/.test(payload.sub)) {
+    return { ok: false, message: "Token is invalid or expired" };
+  }
+  const user = getUserById(context.config.dbPath, Number(payload.sub));
+  if (!user) return { ok: false, message: "Token is invalid or expired" };
+  return { ok: true, payload, user };
+}
+
+async function handleMe(context: AuthServiceContext, req: Request): Promise<Response> {
+  const auth = await authenticateBearer(context, req);
+  if (!auth.ok) return errorResponse(auth.message, 401);
+  return json({ user: { ...auth.payload, is_admin: auth.user.is_admin === 1 } });
 }
 
 type AdminCheckResult =
@@ -213,14 +339,12 @@ async function requireAdmin(
   context: AuthServiceContext,
   req: Request,
 ): Promise<AdminCheckResult> {
-  const token = extractBearerToken(req.headers.get("Authorization"));
-  if (!token) return { ok: false, status: 401, message: "Missing Authorization Bearer token" };
-  const payload = await verifyToken(context.keys, context.config, token);
-  if (!payload) return { ok: false, status: 401, message: "Token is invalid or expired" };
-  if (!payload.is_admin) {
+  const auth = await authenticateBearer(context, req);
+  if (!auth.ok) return { ok: false, status: 401, message: auth.message };
+  if (auth.user.is_admin !== 1) {
     return { ok: false, status: 403, message: "Admin privileges required" };
   }
-  return { ok: true, payload };
+  return { ok: true, payload: auth.payload };
 }
 
 async function handleCreateUser(
@@ -229,16 +353,18 @@ async function handleCreateUser(
 ): Promise<Response> {
   const check = await requireAdmin(context, req);
   if (!check.ok) return errorResponse(check.message, check.status);
-  const body = await parseJsonBody(req);
-  const username = typeof body?.username === "string" ? body.username : "";
-  const password = typeof body?.password === "string" ? body.password : "";
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const body = parsed.value;
+  const username = typeof body.username === "string" ? body.username : "";
+  const password = typeof body.password === "string" ? body.password : "";
   if (!username || !password) return errorResponse("Missing username or password", 400);
   try {
     const user = createUser(
       context.config.dbPath,
       username,
       password,
-      body?.is_admin === true,
+      body.is_admin === true,
     );
     return json(
       {
@@ -304,10 +430,12 @@ async function handleCreateResource(
 ): Promise<Response> {
   const check = await requireAdmin(context, req);
   if (!check.ok) return errorResponse(check.message, check.status);
-  const body = await parseJsonBody(req);
-  const resourceId = typeof body?.resource_id === "string" ? body.resource_id.trim() : "";
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const body = parsed.value;
+  const resourceId = typeof body.resource_id === "string" ? body.resource_id.trim() : "";
   const resourceName =
-    typeof body?.resource_name === "string" ? body.resource_name.trim() : resourceId;
+    typeof body.resource_name === "string" ? body.resource_name.trim() : resourceId;
   if (!/^urc-[0-9a-fA-F]{32}$/.test(resourceId)) {
     return errorResponse("resource_id must be urc-<32 hexadecimal repository id>", 400);
   }
@@ -328,9 +456,10 @@ async function handleSetResourceAccess(
   );
   const user = getUserByUsername(context.config.dbPath, username);
   if (!resource || !user) return errorResponse("Resource or user was not found", 404);
-  const body = await parseJsonBody(req);
-  const requested = Array.isArray(body?.permissions)
-    ? body.permissions.filter((item): item is string => typeof item === "string")
+  const parsed = await parseJsonBody(req);
+  if (!parsed.ok) return jsonBodyError(parsed.reason);
+  const requested = Array.isArray(parsed.value.permissions)
+    ? parsed.value.permissions.filter((item): item is string => typeof item === "string")
     : [];
   const allowed = new Set<string>(OWNER_PERMISSIONS);
   if (requested.some((permission) => !allowed.has(permission))) {
@@ -347,12 +476,23 @@ async function handleSetResourceAccess(
 async function handleBrowserSessionApproval(
   context: AuthServiceContext,
   req: Request,
+  address: string,
 ): Promise<Response> {
-  const body = await parseFormBody(req);
-  const sessionCode = body?.session_code ?? "";
-  const clientState = body?.client_state ?? "";
-  const username = body?.username?.trim() ?? "";
-  const password = body?.password ?? "";
+  const parsed = await parseFormBody(req);
+  if (!parsed.ok && parsed.reason === "too_large") {
+    return html(
+      renderInvalidSession({
+        en: `The login form is larger than ${FORM_BODY_LIMIT_BYTES / 1024} KiB. Return to Lore Client and try again.`,
+        zh: `登录表单超过 ${FORM_BODY_LIMIT_BYTES / 1024} KiB 限制，请返回 Lore Client 重试。`,
+      }),
+      413,
+    );
+  }
+  const body: Record<string, string | undefined> = parsed.ok ? parsed.value : {};
+  const sessionCode = body.session_code ?? "";
+  const clientState = body.client_state ?? "";
+  const username = body.username?.trim() ?? "";
+  const password = body.password ?? "";
   if (!sessionCode || !clientState || !username || !password) {
     return html(
       renderInvalidSession({
@@ -360,6 +500,21 @@ async function handleBrowserSessionApproval(
         zh: "认证请求缺少必要字段，请返回 Lore Client 重试。",
       }),
       400,
+    );
+  }
+
+  const policy = loginThrottlePolicy(context.config);
+  const nowMs = currentTimeMs(context);
+  const gate = checkLoginAllowed(context.config.dbPath, policy, username, address, nowMs);
+  if (!gate.allowed) {
+    return html(
+      renderLoginPage({
+        sessionCode,
+        clientState,
+        error: tooManyAttemptsMessage(gate.retryAfterSeconds),
+      }),
+      429,
+      { "Retry-After": String(gate.retryAfterSeconds) },
     );
   }
 
@@ -372,22 +527,48 @@ async function handleBrowserSessionApproval(
     context.config.authSessionMaxAttempts,
     context.config.authSessionLockSeconds,
   );
-  if (result.ok) return html(renderLoginSuccess(result.user.username));
+  if (result.ok) {
+    clearLoginFailures(context.config.dbPath, username, address);
+    recordLoginSuccess(context.config.dbPath, policy, result.user.id, address, nowMs);
+    return html(renderLoginSuccess(result.user.username));
+  }
+  if (result.credentialChecked) {
+    recordLoginFailure(context.config.dbPath, policy, username, address, nowMs);
+  }
 
   if (result.reason === "invalid_session" || result.reason === "expired") {
     return html(renderInvalidSession(), 410);
   }
-  const message =
-    result.reason === "locked"
-      ? {
-          en: `Too many attempts. Try again in ${result.retryAfterSeconds ?? 60} seconds.`,
-          zh: `尝试次数过多，请在 ${result.retryAfterSeconds ?? 60} 秒后重试。`,
-        }
-      : {
-          en: "The username or password is incorrect.",
-          zh: "用户名或密码不正确。",
-        };
-  return html(renderLoginPage({ sessionCode, clientState, error: message }), 401);
+  if (result.reason === "locked") {
+    const retryAfterSeconds = result.retryAfterSeconds ?? context.config.authSessionLockSeconds;
+    return html(
+      renderLoginPage({
+        sessionCode,
+        clientState,
+        error: tooManyAttemptsMessage(retryAfterSeconds),
+      }),
+      429,
+      { "Retry-After": String(retryAfterSeconds) },
+    );
+  }
+  return html(
+    renderLoginPage({
+      sessionCode,
+      clientState,
+      error: {
+        en: "The username or password is incorrect.",
+        zh: "用户名或密码不正确。",
+      },
+    }),
+    401,
+  );
+}
+
+function tooManyAttemptsMessage(retryAfterSeconds: number): { en: string; zh: string } {
+  return {
+    en: `Too many attempts. Try again in ${retryAfterSeconds} seconds.`,
+    zh: `尝试次数过多，请在 ${retryAfterSeconds} 秒后重试。`,
+  };
 }
 
 /**
@@ -397,10 +578,19 @@ async function handleBrowserSessionApproval(
  * `startAuthService` 将它挂载到 Bun HTTP/HTTPS 服务。
  */
 export function createHttpHandler(context: AuthServiceContext) {
-  return async (req: Request): Promise<Response> => {
+  let proxyWarningIssued = false;
+  return async (req: Request, peerAddress: string | null = null): Promise<Response> => {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method.toUpperCase();
+    if (!proxyWarningIssued) {
+      const warning = trustedProxyWarning(req, peerAddress, context.config.trustedProxyCount);
+      if (warning) {
+        proxyWarningIssued = true;
+        console.warn(warning);
+      }
+    }
+    const address = clientAddress(req, peerAddress, context.config.trustedProxyCount);
 
     try {
       if (path === "/.well-known/jwks.json" && method === "GET") return json(context.jwks);
@@ -412,7 +602,9 @@ export function createHttpHandler(context: AuthServiceContext) {
           grpc_port: context.config.grpcPort,
         });
       }
-      if (path === "/auth/login" && method === "POST") return handleLogin(context, req);
+      if (path === "/auth/login" && method === "POST") {
+        return handleLogin(context, req, address);
+      }
       if (path === "/auth/refresh" && method === "POST") {
         return handleRefreshToken(context, req);
       }
@@ -427,7 +619,7 @@ export function createHttpHandler(context: AuthServiceContext) {
         return html(renderLoginPage({ sessionCode, clientState }));
       }
       if (path === "/auth/session/approve" && method === "POST") {
-        return handleBrowserSessionApproval(context, req);
+        return handleBrowserSessionApproval(context, req, address);
       }
 
       if (path === "/admin" && method === "GET") return handleAdminPanel();
@@ -477,29 +669,33 @@ export async function createAuthServiceContext(): Promise<AuthServiceContext> {
   return { config, keys, jwks };
 }
 
-/** 仅在空数据库中创建首个管理员，并对仍使用示例密码的部署给出明确告警。 */
-function bootstrapAdmin(context: AuthServiceContext): void {
-  createUser(
-    context.config.dbPath,
-    context.config.adminUsername,
-    context.config.adminPassword,
-    true,
-  );
-  console.log(`[bootstrap] Admin user created: ${context.config.adminUsername}`);
-  if (context.config.adminPassword === "changeme") {
-    console.warn(
-      "[security] Default admin password is in use. Set ADMIN_PASSWORD before exposing this service.",
-    );
+/**
+ * 空数据库首次启动时创建管理员。之后若管理员仍使用公开的内置或占位符密码，则替换为当前
+ * ADMIN_PASSWORD 并撤销其 Refresh Token；部署方设置的自定义密码永远不会被启动流程覆盖。
+ */
+function ensureBootstrapAdmin(context: AuthServiceContext): void {
+  const { dbPath, adminUsername, adminPassword } = context.config;
+  if (userCount(dbPath) === 0) {
+    createUser(dbPath, adminUsername, adminPassword, true);
+    console.log(`[bootstrap] Admin user created: ${adminUsername}`);
+    return;
   }
+  if (PUBLIC_ADMIN_PASSWORDS.includes(adminPassword)) return;
+  const admin = getUserByUsername(dbPath, adminUsername);
+  if (!admin) return;
+  const usesPublicPassword = PUBLIC_ADMIN_PASSWORDS.some(
+    (candidate) => authenticate(dbPath, adminUsername, candidate) !== null,
+  );
+  if (!usesPublicPassword) return;
+  setUserPassword(dbPath, admin.id, adminPassword);
+  console.log(`[bootstrap] Replaced the public default password of admin user ${adminUsername}`);
 }
 
 export async function startAuthService(
   context?: AuthServiceContext,
 ): Promise<RunningAuthService> {
   const resolvedContext = context ?? (await createAuthServiceContext());
-  if (userCount(resolvedContext.config.dbPath) === 0) {
-    bootstrapAdmin(resolvedContext);
-  }
+  ensureBootstrapAdmin(resolvedContext);
 
   const grpc = await startGrpcServer(resolvedContext);
   const tls =
@@ -509,11 +705,12 @@ export async function startAuthService(
           key: readFileSync(resolvedContext.config.tlsKeyFile),
         }
       : undefined;
+  const handle = createHttpHandler(resolvedContext);
   const http = Bun.serve({
     hostname: resolvedContext.config.host,
     port: resolvedContext.config.port,
     tls,
-    fetch: createHttpHandler(resolvedContext),
+    fetch: (req, server) => handle(req, server.requestIP(req)?.address ?? null),
   });
 
   return {
@@ -558,11 +755,15 @@ async function main(): Promise<void> {
   const context = await createAuthServiceContext();
   const tokenFor = args.find((argument) => argument.startsWith("--token-for="));
 
-  if (args.includes("--bootstrap") || userCount(context.config.dbPath) === 0) {
-    if (userCount(context.config.dbPath) === 0) {
-      bootstrapAdmin(context);
-    }
+  if (
+    context.config.allowInsecureDefaultAdminPassword &&
+    PUBLIC_ADMIN_PASSWORDS.includes(context.config.adminPassword)
+  ) {
+    console.warn(
+      "[security] ALLOW_INSECURE_DEFAULT_ADMIN_PASSWORD is enabled with a publicly documented administrator password. Use it only for local development.",
+    );
   }
+  ensureBootstrapAdmin(context);
 
   if (tokenFor) {
     const username = tokenFor.slice("--token-for=".length);
@@ -587,6 +788,7 @@ Lore Auth Service started
   Issuer:      ${context.config.issuer}
   Audience:    ${context.config.audience.join(", ")}
   Database:    ${context.config.dbPath}
+  Proxies:     TRUSTED_PROXY_COUNT=${context.config.trustedProxyCount}
 `);
   if (!service.grpc.secure) {
     console.warn(

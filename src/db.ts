@@ -64,7 +64,16 @@ export type ApproveSessionResult =
       ok: false;
       reason: "invalid_session" | "expired" | "locked" | "invalid_credentials";
       retryAfterSeconds?: number;
+      /** 仅当本次确实比对了密码时为 true；调用方据此决定是否计入跨会话的登录失败。 */
+      credentialChecked: boolean;
     };
+
+export type LoginThrottleScope = "user_ip" | "ip";
+
+export interface LoginThrottleEntry {
+  failures: number;
+  last_failure_ms: number;
+}
 
 const databaseCache = new Map<string, Database>();
 
@@ -161,6 +170,31 @@ function initializeSchema(connection: Database): void {
       ON user_resource_permissions(user_id);
     CREATE INDEX IF NOT EXISTS idx_user_resource_permissions_resource
       ON user_resource_permissions(resource_id);
+
+    CREATE TABLE IF NOT EXISTS login_throttles (
+      scope           TEXT NOT NULL CHECK (scope IN ('user_ip', 'ip')),
+      subject_hash    TEXT NOT NULL,
+      account_hash    TEXT,
+      failures        INTEGER NOT NULL DEFAULT 0,
+      last_failure_ms INTEGER NOT NULL,
+      PRIMARY KEY (scope, subject_hash)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_login_throttles_account
+      ON login_throttles(scope, account_hash, last_failure_ms);
+    CREATE INDEX IF NOT EXISTS idx_login_throttles_recent
+      ON login_throttles(last_failure_ms);
+
+    CREATE TABLE IF NOT EXISTS login_successes (
+      user_id         INTEGER NOT NULL,
+      source_hash     TEXT NOT NULL,
+      last_success_ms INTEGER NOT NULL,
+      PRIMARY KEY (user_id, source_hash),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_login_successes_recent
+      ON login_successes(last_success_ms);
   `);
 }
 
@@ -253,6 +287,26 @@ export function listUsers(dbPath: string): User[] {
 export function deleteUser(dbPath: string, username: string): boolean {
   const result = getDb(dbPath).run("DELETE FROM users WHERE username = ?", [username]);
   return result.changes > 0;
+}
+
+/**
+ * 替换密码并撤销该用户所有 Refresh Token，使旧凭据无法继续续期；同时清除依赖旧凭据建立的
+ * 账号级锁定豁免。
+ */
+export function setUserPassword(dbPath: string, userId: number, password: string): void {
+  if (password.length < 8) {
+    throw new Error("Password must contain at least 8 characters");
+  }
+  const connection = getDb(dbPath);
+  const transaction = connection.transaction(() => {
+    connection.run("UPDATE users SET password_hash = ? WHERE id = ?", [
+      hashPassword(password),
+      userId,
+    ]);
+    revokeAllUserRefreshTokens(dbPath, userId);
+    clearLoginSuccessSources(dbPath, userId);
+  });
+  transaction();
 }
 
 export function userCount(dbPath: string): number {
@@ -358,13 +412,16 @@ export function approveAuthSession(
   const connection = getDb(dbPath);
   const now = Date.now();
   const session = getAuthSession(dbPath, clientState, sessionCode);
-  if (!session) return { ok: false, reason: "invalid_session" };
-  if (session.expires_at_ms <= now) return { ok: false, reason: "expired" };
+  if (!session) return { ok: false, reason: "invalid_session", credentialChecked: false };
+  if (session.expires_at_ms <= now) {
+    return { ok: false, reason: "expired", credentialChecked: false };
+  }
   if (session.locked_until_ms && session.locked_until_ms > now) {
     return {
       ok: false,
       reason: "locked",
       retryAfterSeconds: Math.ceil((session.locked_until_ms - now) / 1000),
+      credentialChecked: false,
     };
   }
 
@@ -383,6 +440,7 @@ export function approveAuthSession(
       ok: false,
       reason: lockedUntil ? "locked" : "invalid_credentials",
       retryAfterSeconds: lockedUntil ? lockSeconds : undefined,
+      credentialChecked: true,
     };
   }
 
@@ -413,6 +471,119 @@ export function getApprovedSessionUser(
 
 export function cleanupExpiredAuthSessions(dbPath: string, now = Date.now()): void {
   getDb(dbPath).run("DELETE FROM auth_sessions WHERE expires_at_ms <= ?", [now]);
+}
+
+// ─── 登录失败节流 ─────────────────────────────────────────────────────────
+
+/** subject_hash 与 account_hash 都是哈希值，表中不保存原始 IP 或用户名。 */
+export function getLoginThrottle(
+  dbPath: string,
+  scope: LoginThrottleScope,
+  subjectHash: string,
+): LoginThrottleEntry | null {
+  return getDb(dbPath)
+    .query(
+      "SELECT failures, last_failure_ms FROM login_throttles WHERE scope = ? AND subject_hash = ?",
+    )
+    .get(scope, subjectHash) as LoginThrottleEntry | null;
+}
+
+export function recordLoginThrottleFailure(
+  dbPath: string,
+  scope: LoginThrottleScope,
+  subjectHash: string,
+  accountHash: string | null,
+  nowMs: number,
+  staleBeforeMs: number,
+): void {
+  getDb(dbPath).run(
+    `INSERT INTO login_throttles (scope, subject_hash, account_hash, failures, last_failure_ms)
+     VALUES (?, ?, ?, 1, ?)
+     ON CONFLICT (scope, subject_hash) DO UPDATE SET
+       failures = CASE
+         WHEN login_throttles.last_failure_ms <= ? THEN 1
+         ELSE login_throttles.failures + 1
+       END,
+       last_failure_ms = excluded.last_failure_ms`,
+    [scope, subjectHash, accountHash, nowMs, staleBeforeMs],
+  );
+}
+
+export function clearLoginThrottle(
+  dbPath: string,
+  scope: LoginThrottleScope,
+  subjectHash: string,
+): void {
+  getDb(dbPath).run("DELETE FROM login_throttles WHERE scope = ? AND subject_hash = ?", [
+    scope,
+    subjectHash,
+  ]);
+}
+
+/**
+ * 返回账号在 `sinceMs` 之后失败过的不同来源中，第 `rank` 个最近失败的时间。
+ * 每个（用户名, 来源）组合只有一行，来源为 IPv4 地址或 IPv6 /64 前缀，因此计数天然按来源去重。
+ */
+export function getLoginThrottleAccountEdge(
+  dbPath: string,
+  accountHash: string,
+  sinceMs: number,
+  rank: number,
+): number | null {
+  const row = getDb(dbPath)
+    .query(
+      `SELECT last_failure_ms FROM login_throttles
+       WHERE scope = 'user_ip' AND account_hash = ? AND last_failure_ms > ?
+       ORDER BY last_failure_ms DESC
+       LIMIT 1 OFFSET ?`,
+    )
+    .get(accountHash, sinceMs, rank - 1) as { last_failure_ms: number } | null;
+  return row?.last_failure_ms ?? null;
+}
+
+export function pruneLoginThrottles(dbPath: string, beforeMs: number): void {
+  getDb(dbPath).run("DELETE FROM login_throttles WHERE last_failure_ms <= ?", [beforeMs]);
+}
+
+// ─── 账号级锁定豁免：近期在该账号上成功登录过的来源 ─────────────────────────
+
+/** 来源以 throttleSource 归一后的哈希保存，不含原始 IP。用户删除时由外键级联清除。 */
+export function recordLoginSuccessSource(
+  dbPath: string,
+  userId: number,
+  sourceHash: string,
+  nowMs: number,
+): void {
+  getDb(dbPath).run(
+    `INSERT INTO login_successes (user_id, source_hash, last_success_ms)
+     VALUES (?, ?, ?)
+     ON CONFLICT (user_id, source_hash) DO UPDATE SET
+       last_success_ms = excluded.last_success_ms`,
+    [userId, sourceHash, nowMs],
+  );
+}
+
+export function hasRecentLoginSuccessSource(
+  dbPath: string,
+  userId: number,
+  sourceHash: string,
+  sinceMs: number,
+): boolean {
+  return (
+    getDb(dbPath)
+      .query(
+        "SELECT 1 FROM login_successes WHERE user_id = ? AND source_hash = ? AND last_success_ms > ?",
+      )
+      .get(userId, sourceHash, sinceMs) !== null
+  );
+}
+
+export function pruneLoginSuccessSources(dbPath: string, beforeMs: number): void {
+  getDb(dbPath).run("DELETE FROM login_successes WHERE last_success_ms <= ?", [beforeMs]);
+}
+
+export function clearLoginSuccessSources(dbPath: string, userId: number): void {
+  getDb(dbPath).run("DELETE FROM login_successes WHERE user_id = ?", [userId]);
 }
 
 // ─── Lore 资源与权限 ───────────────────────────────────────────────────────
