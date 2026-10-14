@@ -16,6 +16,12 @@ const CONFIG_ENV_KEYS = [
   "AUTH_SESSION_TTL",
   "AUTH_SESSION_MAX_ATTEMPTS",
   "AUTH_SESSION_LOCK_SECONDS",
+  "LOGIN_MAX_FAILURES_PER_USER_IP",
+  "LOGIN_MAX_FAILURES_PER_IP",
+  "LOGIN_MAX_FAILING_IPS_PER_ACCOUNT",
+  "LOGIN_LOCK_BASE_SECONDS",
+  "LOGIN_LOCK_MAX_SECONDS",
+  "TRUSTED_PROXY_COUNT",
   "KEY_DIR",
   "DB_PATH",
   "ADMIN_USERNAME",
@@ -101,5 +107,55 @@ describe("administrator password configuration", () => {
     process.env.ADMIN_PASSWORD = "correct horse battery";
 
     expect(loadConfig().tokenTtl).toBe(10 * 24 * 60 * 60);
+  });
+});
+
+describe("login throttling configuration", () => {
+  test("uses the documented defaults", () => {
+    process.env.ADMIN_PASSWORD = "correct horse battery";
+
+    const config = loadConfig();
+
+    expect(config.loginMaxFailuresPerUserIp).toBe(5);
+    expect(config.loginMaxFailuresPerIp).toBe(100);
+    expect(config.loginMaxFailingIpsPerAccount).toBe(50);
+    expect(config.loginLockBaseSeconds).toBe(60);
+    expect(config.loginLockMaxSeconds).toBe(900);
+    expect(config.trustedProxyCount).toBe(0);
+  });
+
+  test("treats zero as disabling a limit", () => {
+    process.env.ADMIN_PASSWORD = "correct horse battery";
+    process.env.LOGIN_MAX_FAILURES_PER_USER_IP = "0";
+    process.env.LOGIN_MAX_FAILURES_PER_IP = "0";
+    process.env.LOGIN_MAX_FAILING_IPS_PER_ACCOUNT = "0";
+
+    const config = loadConfig();
+
+    expect(config.loginMaxFailuresPerUserIp).toBe(0);
+    expect(config.loginMaxFailuresPerIp).toBe(0);
+    expect(config.loginMaxFailingIpsPerAccount).toBe(0);
+  });
+
+  test("refuses an account threshold that a single address could reach alone", () => {
+    process.env.ADMIN_PASSWORD = "correct horse battery";
+    process.env.LOGIN_MAX_FAILING_IPS_PER_ACCOUNT = "1";
+
+    expect(() => loadConfig()).toThrow("must be 0 or at least 2");
+  });
+
+  test("refuses negative limits and a maximum lock shorter than the base lock", () => {
+    process.env.ADMIN_PASSWORD = "correct horse battery";
+    process.env.LOGIN_MAX_FAILURES_PER_IP = "-1";
+    expect(() => loadConfig()).toThrow("LOGIN_MAX_FAILURES_PER_IP must be a non-negative integer");
+
+    process.env.LOGIN_MAX_FAILURES_PER_IP = "100";
+    process.env.LOGIN_LOCK_BASE_SECONDS = "600";
+    process.env.LOGIN_LOCK_MAX_SECONDS = "60";
+    expect(() => loadConfig()).toThrow("must not be smaller than LOGIN_LOCK_BASE_SECONDS");
+
+    process.env.LOGIN_LOCK_BASE_SECONDS = "60";
+    process.env.TRUSTED_PROXY_COUNT = "-2";
+    expect(() => loadConfig()).toThrow("TRUSTED_PROXY_COUNT must be a non-negative integer");
   });
 });

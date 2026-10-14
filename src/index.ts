@@ -10,6 +10,7 @@ import { readFileSync } from "fs";
 import packageJson from "../package.json";
 import { handleAdminPanel } from "./admin-panel";
 import { isStandaloneExecutable } from "./build-environment";
+import { clientAddress } from "./client-address";
 import { PUBLIC_ADMIN_PASSWORDS, loadConfig } from "./config";
 import type { AuthServiceContext } from "./context";
 import {
@@ -54,6 +55,12 @@ import {
   renderLoginPage,
   renderLoginSuccess,
 } from "./login-page";
+import {
+  checkLoginAllowed,
+  clearLoginFailures,
+  loginThrottlePolicy,
+  recordLoginFailure,
+} from "./login-throttle";
 
 export interface RunningAuthService {
   context: AuthServiceContext;
@@ -62,18 +69,19 @@ export interface RunningAuthService {
   close(): Promise<void>;
 }
 
-function json(data: unknown, status = 200): Response {
+function json(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
+      ...headers,
     },
   });
 }
 
-function html(content: string, status = 200): Response {
+function html(content: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(content, {
     status,
     headers: {
@@ -84,12 +92,21 @@ function html(content: string, status = 200): Response {
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
       "X-Frame-Options": "DENY",
+      ...headers,
     },
   });
 }
 
-function errorResponse(message: string, status = 400): Response {
-  return json({ error: message }, status);
+function errorResponse(
+  message: string,
+  status = 400,
+  headers: Record<string, string> = {},
+): Response {
+  return json({ error: message }, status, headers);
+}
+
+function currentTimeMs(context: AuthServiceContext): number {
+  return context.now?.() ?? Date.now();
 }
 
 const JSON_BODY_LIMIT_BYTES = 64 * 1024;
@@ -180,7 +197,11 @@ async function parseFormBody(req: Request): Promise<BodyParseResult<Record<strin
   return { ok: true, value: Object.fromEntries(new URLSearchParams(encoded)) };
 }
 
-async function handleLogin(context: AuthServiceContext, req: Request): Promise<Response> {
+async function handleLogin(
+  context: AuthServiceContext,
+  req: Request,
+  address: string,
+): Promise<Response> {
   const parsed = await parseJsonBody(req);
   if (!parsed.ok) return jsonBodyError(parsed.reason);
   const body = parsed.value;
@@ -188,9 +209,31 @@ async function handleLogin(context: AuthServiceContext, req: Request): Promise<R
   const password = typeof body.password === "string" ? body.password : "";
   if (!username || !password) return errorResponse("Missing username or password", 400);
 
+  const policy = loginThrottlePolicy(context.config);
+  const normalizedUsername = username.trim();
+  const nowMs = currentTimeMs(context);
+  const gate = checkLoginAllowed(
+    context.config.dbPath,
+    policy,
+    normalizedUsername,
+    address,
+    nowMs,
+  );
+  if (!gate.allowed) {
+    return errorResponse(
+      `Too many failed login attempts. Try again in ${gate.retryAfterSeconds} seconds.`,
+      429,
+      { "Retry-After": String(gate.retryAfterSeconds) },
+    );
+  }
+
   // 复用数据库认证函数的恒定时间哈希比较，同时保持外部错误不可枚举用户。
   const authenticated = authenticate(context.config.dbPath, username, password);
-  if (!authenticated) return errorResponse("Invalid username or password", 401);
+  if (!authenticated) {
+    recordLoginFailure(context.config.dbPath, policy, normalizedUsername, address, nowMs);
+    return errorResponse("Invalid username or password", 401);
+  }
+  clearLoginFailures(context.config.dbPath, normalizedUsername, address);
 
   const accessToken = await issueAuthenticationToken(
     context.keys,
@@ -431,6 +474,7 @@ async function handleSetResourceAccess(
 async function handleBrowserSessionApproval(
   context: AuthServiceContext,
   req: Request,
+  address: string,
 ): Promise<Response> {
   const parsed = await parseFormBody(req);
   if (!parsed.ok && parsed.reason === "too_large") {
@@ -457,6 +501,21 @@ async function handleBrowserSessionApproval(
     );
   }
 
+  const policy = loginThrottlePolicy(context.config);
+  const nowMs = currentTimeMs(context);
+  const gate = checkLoginAllowed(context.config.dbPath, policy, username, address, nowMs);
+  if (!gate.allowed) {
+    return html(
+      renderLoginPage({
+        sessionCode,
+        clientState,
+        error: tooManyAttemptsMessage(gate.retryAfterSeconds),
+      }),
+      429,
+      { "Retry-After": String(gate.retryAfterSeconds) },
+    );
+  }
+
   const result = approveAuthSession(
     context.config.dbPath,
     clientState,
@@ -466,22 +525,47 @@ async function handleBrowserSessionApproval(
     context.config.authSessionMaxAttempts,
     context.config.authSessionLockSeconds,
   );
-  if (result.ok) return html(renderLoginSuccess(result.user.username));
+  if (result.ok) {
+    clearLoginFailures(context.config.dbPath, username, address);
+    return html(renderLoginSuccess(result.user.username));
+  }
+  if (result.credentialChecked) {
+    recordLoginFailure(context.config.dbPath, policy, username, address, nowMs);
+  }
 
   if (result.reason === "invalid_session" || result.reason === "expired") {
     return html(renderInvalidSession(), 410);
   }
-  const message =
-    result.reason === "locked"
-      ? {
-          en: `Too many attempts. Try again in ${result.retryAfterSeconds ?? 60} seconds.`,
-          zh: `尝试次数过多，请在 ${result.retryAfterSeconds ?? 60} 秒后重试。`,
-        }
-      : {
-          en: "The username or password is incorrect.",
-          zh: "用户名或密码不正确。",
-        };
-  return html(renderLoginPage({ sessionCode, clientState, error: message }), 401);
+  if (result.reason === "locked") {
+    const retryAfterSeconds = result.retryAfterSeconds ?? context.config.authSessionLockSeconds;
+    return html(
+      renderLoginPage({
+        sessionCode,
+        clientState,
+        error: tooManyAttemptsMessage(retryAfterSeconds),
+      }),
+      429,
+      { "Retry-After": String(retryAfterSeconds) },
+    );
+  }
+  return html(
+    renderLoginPage({
+      sessionCode,
+      clientState,
+      error: {
+        en: "The username or password is incorrect.",
+        zh: "用户名或密码不正确。",
+      },
+    }),
+    401,
+  );
+}
+
+function tooManyAttemptsMessage(retryAfterSeconds: number): { en: string; zh: string } {
+  return {
+    en: `Too many attempts. Try again in ${retryAfterSeconds} seconds.`,
+    zh: `尝试次数过多，请在 ${retryAfterSeconds} 秒后重试。`,
+  };
 }
 
 /**
@@ -491,10 +575,11 @@ async function handleBrowserSessionApproval(
  * `startAuthService` 将它挂载到 Bun HTTP/HTTPS 服务。
  */
 export function createHttpHandler(context: AuthServiceContext) {
-  return async (req: Request): Promise<Response> => {
+  return async (req: Request, peerAddress: string | null = null): Promise<Response> => {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method.toUpperCase();
+    const address = clientAddress(req, peerAddress, context.config.trustedProxyCount);
 
     try {
       if (path === "/.well-known/jwks.json" && method === "GET") return json(context.jwks);
@@ -506,7 +591,9 @@ export function createHttpHandler(context: AuthServiceContext) {
           grpc_port: context.config.grpcPort,
         });
       }
-      if (path === "/auth/login" && method === "POST") return handleLogin(context, req);
+      if (path === "/auth/login" && method === "POST") {
+        return handleLogin(context, req, address);
+      }
       if (path === "/auth/refresh" && method === "POST") {
         return handleRefreshToken(context, req);
       }
@@ -521,7 +608,7 @@ export function createHttpHandler(context: AuthServiceContext) {
         return html(renderLoginPage({ sessionCode, clientState }));
       }
       if (path === "/auth/session/approve" && method === "POST") {
-        return handleBrowserSessionApproval(context, req);
+        return handleBrowserSessionApproval(context, req, address);
       }
 
       if (path === "/admin" && method === "GET") return handleAdminPanel();
@@ -607,11 +694,12 @@ export async function startAuthService(
           key: readFileSync(resolvedContext.config.tlsKeyFile),
         }
       : undefined;
+  const handle = createHttpHandler(resolvedContext);
   const http = Bun.serve({
     hostname: resolvedContext.config.host,
     port: resolvedContext.config.port,
     tls,
-    fetch: createHttpHandler(resolvedContext),
+    fetch: (req, server) => handle(req, server.requestIP(req)?.address ?? null),
   });
 
   return {

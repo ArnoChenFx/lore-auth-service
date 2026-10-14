@@ -16,6 +16,12 @@ export interface AppConfig {
   authSessionTtl: number;
   authSessionMaxAttempts: number;
   authSessionLockSeconds: number;
+  loginMaxFailuresPerUserIp: number;
+  loginMaxFailuresPerIp: number;
+  loginMaxFailingIpsPerAccount: number;
+  loginLockBaseSeconds: number;
+  loginLockMaxSeconds: number;
+  trustedProxyCount: number;
   keyDir: string;
   dbPath: string;
   adminUsername: string;
@@ -68,6 +74,12 @@ function envOptional(key: string): string | null {
 function assertPositive(name: string, value: number): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer`);
+  }
+}
+
+function assertNonNegative(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer`);
   }
 }
 
@@ -124,6 +136,14 @@ export function loadConfig(): AppConfig {
     authSessionTtl: envInt("AUTH_SESSION_TTL", 300),
     authSessionMaxAttempts: envInt("AUTH_SESSION_MAX_ATTEMPTS", 5),
     authSessionLockSeconds: envInt("AUTH_SESSION_LOCK_SECONDS", 60),
+    // 登录失败节流按（用户名, IP）、IP、账号三个维度计数；数值为 0 时关闭对应维度。
+    loginMaxFailuresPerUserIp: envInt("LOGIN_MAX_FAILURES_PER_USER_IP", 5),
+    loginMaxFailuresPerIp: envInt("LOGIN_MAX_FAILURES_PER_IP", 100),
+    loginMaxFailingIpsPerAccount: envInt("LOGIN_MAX_FAILING_IPS_PER_ACCOUNT", 50),
+    loginLockBaseSeconds: envInt("LOGIN_LOCK_BASE_SECONDS", 60),
+    loginLockMaxSeconds: envInt("LOGIN_LOCK_MAX_SECONDS", 900),
+    // 须与实际部署的可信反向代理层数一致；设置过大时，客户端可伪造 X-Forwarded-For 绕过按 IP 的限制。
+    trustedProxyCount: envInt("TRUSTED_PROXY_COUNT", 0),
     keyDir: env("KEY_DIR", "./keys"),
     dbPath: env("DB_PATH", "./lore-auth.db"),
     adminUsername: env("ADMIN_USERNAME", "admin"),
@@ -143,6 +163,20 @@ export function loadConfig(): AppConfig {
   assertPositive("AUTH_SESSION_TTL", config.authSessionTtl);
   assertPositive("AUTH_SESSION_MAX_ATTEMPTS", config.authSessionMaxAttempts);
   assertPositive("AUTH_SESSION_LOCK_SECONDS", config.authSessionLockSeconds);
+  assertNonNegative("LOGIN_MAX_FAILURES_PER_USER_IP", config.loginMaxFailuresPerUserIp);
+  assertNonNegative("LOGIN_MAX_FAILURES_PER_IP", config.loginMaxFailuresPerIp);
+  assertNonNegative("LOGIN_MAX_FAILING_IPS_PER_ACCOUNT", config.loginMaxFailingIpsPerAccount);
+  if (config.loginMaxFailingIpsPerAccount === 1) {
+    throw new Error(
+      "LOGIN_MAX_FAILING_IPS_PER_ACCOUNT must be 0 or at least 2; with 1, a single failed attempt from one address would lock the account for everyone",
+    );
+  }
+  assertPositive("LOGIN_LOCK_BASE_SECONDS", config.loginLockBaseSeconds);
+  assertPositive("LOGIN_LOCK_MAX_SECONDS", config.loginLockMaxSeconds);
+  if (config.loginLockMaxSeconds < config.loginLockBaseSeconds) {
+    throw new Error("LOGIN_LOCK_MAX_SECONDS must not be smaller than LOGIN_LOCK_BASE_SECONDS");
+  }
+  assertNonNegative("TRUSTED_PROXY_COUNT", config.trustedProxyCount);
   assertHttpUrl("JWT_ISSUER", config.issuer);
   assertHttpUrl("PUBLIC_BASE_URL", config.publicBaseUrl);
   if (Boolean(config.tlsCertFile) !== Boolean(config.tlsKeyFile)) {
