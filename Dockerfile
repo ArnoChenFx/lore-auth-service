@@ -2,7 +2,7 @@
 # Based on the official oven/bun image, using a multi-stage build to reduce the final image size.
 
 # ── Stage 1: Install dependencies ──
-FROM oven/bun:1 AS deps
+FROM oven/bun:1-alpine AS deps
 WORKDIR /app
 
 # Copy dependency manifests first to leverage Docker layer caching.
@@ -10,18 +10,14 @@ COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
 # ── Stage 2: Runtime ──
-FROM oven/bun:1 AS runtime
+FROM oven/bun:1-alpine AS runtime
 
-# Install gosu so the entrypoint can drop to the non-root user after fixing
-# permissions; it is linked as su-exec, the name the entrypoint calls.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -s /usr/sbin/gosu /usr/local/bin/su-exec
+# Install su-exec so the entrypoint can drop to the non-root user after fixing permissions.
+RUN apk add --no-cache su-exec
 
 # Run as a non-root user.
-RUN groupadd --system --gid 1001 lore \
-    && useradd --system --uid 1001 --gid lore --home-dir /app lore
+RUN addgroup --system --gid 1001 lore \
+    && adduser --system --uid 1001 lore --home /app
 
 WORKDIR /app
 
